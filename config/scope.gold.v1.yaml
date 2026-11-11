@@ -1,0 +1,1003 @@
+manifest_version: 1
+scope_id: gold.v1
+scope_version: 1
+status: design
+created_at: "2026-11-11"
+authority: notes.txt
+description: >-
+  XAUUSD spot-gold, long-only, cash-equivalent v1 scope. Gold macro fundamentals define
+  what to consider; M15 technicals define when to act. The overseer is a rule-based
+  referee and never originates trades. Exits are first-class.
+
+market:
+  symbol: XAUUSD
+  instrument_class: spot_gold_cfd
+  venue: FBS-Demo
+  direction: long_only
+  execution_bar: M15
+  context_bar: H4
+  account_model: cash_equivalent_no_leverage
+  max_notional_exposure_ratio: 1.0
+  timezone: UTC
+  broker_time_calibration_required: true
+  chart_assumption: none
+  real_money_allowed: false
+
+risk:
+  per_trade_equity_pct: 0.25
+  daily_loss_halt_pct: 1.5
+  max_drawdown_flatten_pct: 8.0
+  risk_exits_veto_immune: true
+  daily_halt_action: flatten_and_halt
+  max_drawdown_action: flatten_and_halt
+  position_sizing: fixed_fractional
+  leverage_cap: 1.0
+
+sources:
+  - id: mt5_xauusd
+    name: MetaTrader 5 XAUUSD
+    type: mt5
+    role: price_and_execution
+    required_for_m1: false
+    required_for_live: true
+    runtime_only: true
+    legal:
+      license: broker_terms
+      tos_risk: medium
+      notes: >-
+        Use is governed by the broker's terminal and data terms. Do not redistribute
+        broker tick/bar data.
+    revision:
+      point_in_time: true
+      knowledge_time: realtime
+      vintage_source: null
+      notes: Real-time bars and ticks; historical bars may be revised by the broker.
+    coverage:
+      history_start: broker_dependent
+      cadence: realtime
+      gap_notes: Weekend closure, maintenance windows, and broker feed gaps.
+    checks:
+      - kind: mt5_preflight
+        symbol: XAUUSD
+        execution_bar: M15
+        context_bar: H4
+        min_execution_bars: 500
+        min_context_bars: 500
+        max_spread_points: 100
+        require_demo: true
+
+  - id: fred_dfii10
+    name: FRED 10-Year Real Yield (DFII10)
+    type: http_csv
+    role: fundamental_input
+    required_for_m1: true
+    required_for_live: true
+    url: https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10
+    legal:
+      license: U.S. Government work / FRED terms
+      tos_risk: low
+      notes: Free FRED CSV endpoint; retain source attribution.
+    revision:
+      point_in_time: false
+      knowledge_time: release_time
+      vintage_source: alfred_dfii10
+      notes: FRED returns the latest revision. Backtests must use ALFRED vintages.
+    coverage:
+      history_start: "2003-01-02"
+      cadence: daily
+      gap_notes: Treasury market holidays and release gaps.
+    checks:
+      - kind: http_csv
+        required_columns: [observation_date, DFII10]
+        min_rows: 1000
+        max_age_days: 10
+        date_column: observation_date
+        date_formats: ["%Y-%m-%d"]
+
+  - id: alfred_dfii10
+    name: ALFRED 10-Year Real Yield Vintage (DFII10)
+    type: http_csv
+    role: point_in_time_macro
+    required_for_m1: true
+    required_for_live: false
+    url: https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=DFII10
+    legal:
+      license: U.S. Government work / ALFRED terms
+      tos_risk: low
+      notes: Free ALFRED vintage CSV endpoint; retain source attribution.
+    revision:
+      point_in_time: true
+      knowledge_time: vintage_release
+      vintage_source: self
+      notes: Vintage date is the knowledge time. Never use a later vintage in a backtest.
+    coverage:
+      history_start: "2003-01-02"
+      cadence: daily
+      gap_notes: Vintage availability follows FRED/ALFRED release history.
+    checks:
+      - kind: http_csv
+        required_columns: [observation_date]
+        value_column_regex: "^DFII10_"
+        min_rows: 1000
+        max_age_days: 10
+        date_column: observation_date
+        date_formats: ["%Y-%m-%d"]
+
+  - id: treasury_real_yield
+    name: U.S. Treasury Daily Real Yield Curve
+    type: http_csv
+    role: fundamental_input
+    required_for_m1: true
+    required_for_live: true
+    url: >-
+      https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/2026/all?type=daily_treasury_real_yield_curve&field_tdr_date_value=2026&page&_format=csv
+    legal:
+      license: U.S. Government work
+      tos_risk: low
+      notes: Official Treasury data; retain source attribution.
+    revision:
+      point_in_time: false
+      knowledge_time: release_time
+      vintage_source: null
+      notes: Latest curve only; use FRED/ALFRED for revision-aware history.
+    coverage:
+      history_start: "2003-01-02"
+      cadence: daily
+      gap_notes: Treasury market holidays.
+    checks:
+      - kind: http_csv
+        required_columns: [Date, "10 YR"]
+        min_rows: 100
+        max_age_days: 10
+        date_column: Date
+        date_formats: ["%m/%d/%Y"]
+
+  - id: fred_dtwexbgs
+    name: FRED Broad U.S. Dollar Index (DTWEXBGS)
+    type: http_csv
+    role: fundamental_input
+    required_for_m1: true
+    required_for_live: true
+    url: https://fred.stlouisfed.org/graph/fredgraph.csv?id=DTWEXBGS
+    legal:
+      license: U.S. Government work / FRED terms
+      tos_risk: low
+      notes: Free FRED CSV endpoint; retain source attribution.
+    revision:
+      point_in_time: false
+      knowledge_time: release_time
+      vintage_source: alfred_dtwexbgs
+      notes: FRED returns the latest revision. Backtests must use ALFRED vintages.
+    coverage:
+      history_start: "2006-01-02"
+      cadence: daily
+      gap_notes: Federal Reserve release calendar and holidays.
+    checks:
+      - kind: http_csv
+        required_columns: [observation_date, DTWEXBGS]
+        min_rows: 1000
+        max_age_days: 10
+        date_column: observation_date
+        date_formats: ["%Y-%m-%d"]
+
+  - id: alfred_dtwexbgs
+    name: ALFRED Broad U.S. Dollar Index Vintage (DTWEXBGS)
+    type: http_csv
+    role: point_in_time_macro
+    required_for_m1: true
+    required_for_live: false
+    url: https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=DTWEXBGS
+    legal:
+      license: U.S. Government work / ALFRED terms
+      tos_risk: low
+      notes: Free ALFRED vintage CSV endpoint; retain source attribution.
+    revision:
+      point_in_time: true
+      knowledge_time: vintage_release
+      vintage_source: self
+      notes: Vintage date is the knowledge time.
+    coverage:
+      history_start: "2006-01-02"
+      cadence: daily
+      gap_notes: Vintage availability follows FRED/ALFRED release history.
+    checks:
+      - kind: http_csv
+        required_columns: [observation_date]
+        value_column_regex: "^DTWEXBGS_"
+        min_rows: 1000
+        max_age_days: 10
+        date_column: observation_date
+        date_formats: ["%Y-%m-%d"]
+
+  - id: spdr_gld_archive
+    name: SPDR Gold Shares Historical Archive
+    type: http_xlsx
+    role: fundamental_input
+    required_for_m1: true
+    required_for_live: true
+    url: https://api.spdrgoldshares.com/api/v1/historical-archive?product=gld&exchange=NYSE&lang=en
+    legal:
+      license: SPDR Gold Shares website terms
+      tos_risk: medium
+      notes: Public archive XLSX; do not redistribute the file. Scrape politely.
+    revision:
+      point_in_time: false
+      knowledge_time: publication_time
+      vintage_source: null
+      notes: Daily holdings file; historical values may be restated.
+    coverage:
+      history_start: "2004-11-18"
+      cadence: daily
+      gap_notes: U.S. market holidays and fund publication gaps.
+    checks:
+      - kind: http_xlsx
+        sheet_name: US GLD Historical Archive
+        header_row: 1
+        required_columns:
+          - Date
+          - Closing Price
+          - Total Ounces of Gold in the Trust
+          - Tonnes of Gold
+        min_rows: 1000
+        max_age_days: 10
+        date_column: Date
+        date_formats: ["%d-%b-%Y"]
+
+  - id: cftc_cot
+    name: CFTC Commitments of Traders — Gold (088691)
+    type: http_zip
+    role: fundamental_input
+    required_for_m1: true
+    required_for_live: true
+    url: https://www.cftc.gov/files/dea/history/deacot2026.zip
+    legal:
+      license: U.S. Government work
+      tos_risk: low
+      notes: Public CFTC history ZIP; retain source attribution.
+    revision:
+      point_in_time: false
+      knowledge_time: friday_release
+      vintage_source: null
+      notes: COT reports are released weekly; revisions are rare but possible.
+    coverage:
+      history_start: "1986-01-01"
+      cadence: weekly
+      gap_notes: Holiday weeks and CFTC publication delays.
+    checks:
+      - kind: http_zip
+        required_entries: [annual.txt]
+        entry_csv: annual.txt
+        timeout_seconds: 90
+        required_columns:
+          - Market and Exchange Names
+          - As of Date in Form YYYY-MM-DD
+          - CFTC Contract Market Code
+          - Noncommercial Positions-Long (All)
+          - Noncommercial Positions-Short (All)
+        min_rows: 100
+        max_age_days: 14
+        date_column: As of Date in Form YYYY-MM-DD
+        date_formats: ["%Y-%m-%d"]
+        filter_column: CFTC Contract Market Code
+        filter_value: "088691"
+
+  - id: cboe_gvz
+    name: CBOE Gold ETF Volatility Index (GVZ)
+    type: http_csv
+    role: risk_diagnostic
+    required_for_m1: true
+    required_for_live: true
+    url: https://cdn.cboe.com/api/global/us_indices/daily_prices/GVZ_History.csv
+    legal:
+      license: CBOE terms
+      tos_risk: medium
+      notes: Public index history CSV; do not redistribute.
+    revision:
+      point_in_time: false
+      knowledge_time: publication_time
+      vintage_source: null
+      notes: Daily index history; may be revised.
+    coverage:
+      history_start: "2009-09-18"
+      cadence: daily
+      gap_notes: Exchange holidays and publication gaps.
+    checks:
+      - kind: http_csv
+        required_columns: [DATE, GVZ]
+        min_rows: 1000
+        max_age_days: 10
+        date_column: DATE
+        date_formats: ["%m/%d/%Y"]
+
+  - id: fred_t10yie
+    name: FRED 10-Year Breakeven Inflation (T10YIE)
+    type: http_csv
+    role: diagnostic
+    required_for_m1: true
+    required_for_live: true
+    url: https://fred.stlouisfed.org/graph/fredgraph.csv?id=T10YIE
+    legal:
+      license: U.S. Government work / FRED terms
+      tos_risk: low
+      notes: Free FRED CSV endpoint; retain source attribution.
+    revision:
+      point_in_time: false
+      knowledge_time: release_time
+      vintage_source: alfred_t10yie
+      notes: Diagnostic only in v1; not used in entry score or overseer.
+    coverage:
+      history_start: "2003-01-02"
+      cadence: daily
+      gap_notes: Treasury market holidays.
+    checks:
+      - kind: http_csv
+        required_columns: [observation_date, T10YIE]
+        min_rows: 1000
+        max_age_days: 10
+        date_column: observation_date
+        date_formats: ["%Y-%m-%d"]
+
+  - id: alfred_t10yie
+    name: ALFRED 10-Year Breakeven Inflation Vintage (T10YIE)
+    type: http_csv
+    role: point_in_time_macro
+    required_for_m1: true
+    required_for_live: false
+    url: https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=T10YIE
+    legal:
+      license: U.S. Government work / ALFRED terms
+      tos_risk: low
+      notes: Free ALFRED vintage CSV endpoint; retain source attribution.
+    revision:
+      point_in_time: true
+      knowledge_time: vintage_release
+      vintage_source: self
+      notes: Diagnostic only in v1.
+    coverage:
+      history_start: "2003-01-02"
+      cadence: daily
+      gap_notes: Vintage availability follows FRED/ALFRED release history.
+    checks:
+      - kind: http_csv
+        required_columns: [observation_date]
+        value_column_regex: "^T10YIE_"
+        min_rows: 1000
+        max_age_days: 10
+        date_column: observation_date
+        date_formats: ["%Y-%m-%d"]
+
+  - id: wgc_central_bank_manual
+    name: WGC/IMF Central-Bank Gold Holdings (Manual Monthly XLSX)
+    type: manual_xlsx
+    role: diagnostic
+    required_for_m1: false
+    required_for_live: false
+    path: data/manual/wgc/world_official_gold_holdings.xlsx
+    legal:
+      license: WGC/IMF publication terms
+      tos_risk: medium
+      notes: >-
+        Human-downloaded file. Do not commit. Do not redistribute. Verify the
+        publisher's terms before use.
+    revision:
+      point_in_time: false
+      knowledge_time: human_download_time
+      vintage_source: null
+      notes: Monthly publication; human must record download date.
+    coverage:
+      history_start: publication_dependent
+      cadence: monthly
+      gap_notes: Publication lags and country-level reporting gaps.
+    label: "derived from human-downloaded file; weight in entry score = 0; NOT consumed by the overseer (§9) in v1."
+    checks:
+      - kind: manual_xlsx
+        path: data/manual/wgc/world_official_gold_holdings.xlsx
+        max_age_days: 90
+        reminder_event: data/manual/wgc/refresh_event.json
+        reminder_cadence_days: 30
+        min_rows: 1
+        label: "derived from human-downloaded file; weight in entry score = 0; NOT consumed by the overseer (§9) in v1."
+
+fundamental_inputs:
+  - id: real_yield_10y
+    name: 10-year real yield
+    weight: 0.55
+    role: primary
+    source_ids: [fred_dfii10, alfred_dfii10, treasury_real_yield]
+    field: DFII10
+    transform: level_change_20d
+    sign: negative
+    pit_policy: Use ALFRED vintage in backtests; live uses latest release.
+    revision_policy: Record vintage and release time; never use future revisions.
+    coverage_gap: Treasury holidays and release gaps.
+
+  - id: broad_usd
+    name: Broad U.S. dollar index
+    weight: 0.20
+    role: primary
+    source_ids: [fred_dtwexbgs, alfred_dtwexbgs]
+    field: DTWEXBGS
+    transform: level_change_20d
+    sign: negative
+    pit_policy: Use ALFRED vintage in backtests; live uses latest release.
+    revision_policy: Record vintage and release time.
+    coverage_gap: Federal Reserve release calendar.
+
+  - id: gold_etf_flows
+    name: Gold ETF holdings and flows
+    weight: 0.15
+    role: confirming
+    source_ids: [spdr_gld_archive]
+    field: Tonnes of Gold
+    transform: change_5d
+    sign: positive
+    pit_policy: Use publication date as knowledge time.
+    revision_policy: Record file retrieval time and source hash.
+    coverage_gap: iShares IAU secondary source deferred to v2; GLD is the v1 proxy.
+
+  - id: cot_managed_money
+    name: CFTC managed-money / noncommercial positioning
+    weight: 0.10
+    role: confirming
+    source_ids: [cftc_cot]
+    field: Noncommercial Positions-Long (All) - Noncommercial Positions-Short (All)
+    transform: net_position_percentile_156w
+    sign: contextual
+    pit_policy: Use Friday release as knowledge time.
+    revision_policy: Record report date and release date.
+    coverage_gap: Holiday weeks and CFTC publication delays.
+
+  - id: central_bank_gold
+    name: Central-bank gold holdings
+    weight: 0.00
+    role: diagnostic
+    validation_class: HUMAN_JUDGMENT
+    source_ids: [wgc_central_bank_manual]
+    field: official_gold_holdings_tonnes
+    transform: level_change_3m
+    sign: contextual
+    consumed_by_overseer: false
+    entry_score_weight: 0.0
+    label: "derived from human-downloaded file; weight in entry score = 0; NOT consumed by the overseer (§9) in v1."
+    pit_policy: Human records download date and publication month.
+    revision_policy: Human verifies the file and records the source URL.
+    coverage_gap: Monthly publication lag and country-level reporting gaps.
+
+  - id: breakeven_10y
+    name: 10-year breakeven inflation
+    weight: 0.00
+    role: diagnostic
+    source_ids: [fred_t10yie, alfred_t10yie]
+    field: T10YIE
+    transform: level_change_20d
+    sign: contextual
+    consumed_by_overseer: false
+    entry_score_weight: 0.0
+    pit_policy: Use ALFRED vintage in backtests.
+    revision_policy: Record vintage and release time.
+    coverage_gap: Diagnostic only in v1.
+
+technical:
+  execution_bar: M15
+  context_bar: H4
+  indicators:
+    - id: ema_stack
+      timeframe: M15
+      params: {fast: 20, slow: 50, trend: 200}
+    - id: rsi
+      timeframe: M15
+      params: {period: 14}
+    - id: atr
+      timeframe: M15
+      params: {period: 14}
+    - id: swing_structure
+      timeframe: M15
+      params: {lookback: 20}
+    - id: h4_trend
+      timeframe: H4
+      params: {ema_fast: 20, ema_slow: 50}
+  entry_requires:
+    - h4_context
+    - m15_trigger
+    - atr_filter
+    - spread_filter
+    - no_news_blackout
+  no_trade_filters:
+    - spread_above_limit
+    - atr_below_floor
+    - atr_above_ceiling
+    - major_news_blackout
+    - stale_fundamentals
+    - stale_mt5_feed
+
+fusion:
+  fundamental_weight: 0.60
+  technical_weight: 0.40
+  entry_requires_both: true
+  fundamental_score_range: [-1, 1]
+  technical_score_range: [-1, 1]
+  conflict_policy: no_trade
+  overseer_can_originate: false
+
+overseer:
+  type: rule_based_referee
+  originates_entries: false
+  arbitrates: true
+  risk_exits_veto_immune: true
+  calibration:
+    artifact: config/calibration/gold.v1.overseer.json
+    required_keys:
+      - artifact_version
+      - scope_id
+      - manifest_hash
+      - status
+      - fit_window
+      - metrics
+      - notes
+    allow_not_fitted: true
+  authority:
+    may_change_scope: false
+    may_override_risk_exit: false
+    may_emit_advisory_exit: true
+
+exits:
+  risk_exits_veto_immune: true
+  sell_decisions_are_first_class: true
+  precedence:
+    - priority: 100
+      id: emergency_risk
+      action: flatten_and_halt
+    - priority: 90
+      id: hard_or_trailing_stop
+      action: close
+    - priority: 80
+      id: thesis_invalidated
+      action: close
+    - priority: 70
+      id: thesis_weakened
+      action: reduce_or_close
+    - priority: 60
+      id: time_stop
+      action: close
+    - priority: 50
+      id: technical_or_profit_trail
+      action: trail_or_close
+    - priority: 40
+      id: profit_take
+      action: close
+    - priority: 30
+      id: advisory
+      action: notify_only
+
+storage:
+  sqlite:
+    path: data/sqlite/goldbot.sqlite
+    journal_mode: WAL
+    single_writer: true
+    tables:
+      - snapshots
+      - decisions
+      - orders
+      - fills
+      - positions
+      - logs
+      - scope_versions
+      - incidents
+  analytical:
+    type: parquet_duckdb
+    path: data/parquet
+  schema:
+    path: config/storage.schema.sql
+    required_tables:
+      - snapshots
+      - decisions
+      - orders
+      - fills
+      - positions
+      - logs
+      - scope_versions
+      - incidents
+
+backtest:
+  execution_bar: M15
+  context_bar: H4
+  costs:
+    spread: modeled_per_bar
+    commission: modeled_per_lot
+    slippage: modeled_per_fill
+    swap: modeled_if_held_overnight
+  fill_rule: next_bar_open
+  stop_first: true
+  no_lookahead: true
+  point_in_time_macro: true
+  out_of_sample: true
+  walk_forward: true
+  min_demo_months: 3
+  min_trades: 100
+  promotion_gates:
+    - v1_complete
+    - three_months_demo
+    - hundred_plus_trades
+    - positive_out_of_sample_after_costs
+    - drawdown_within_limits
+    - kill_switch_drill_passed
+    - reconnect_drill_passed
+    - human_signoff
+
+analytics:
+  baselines:
+    path: config/analytics.baselines.yaml
+    required_keys: [baselines, metrics]
+  dashboard:
+    mt5_access: forbidden
+    scope_change: forbidden
+    read_only: true
+
+runtime_processes:
+  - id: supervisor
+    role: lifecycle_and_scope
+    mt5_access: allowed
+    can_change_scope: true
+    only_scope_changer: true
+  - id: bot
+    role: strategy_and_execution
+    mt5_access: allowed
+    can_change_scope: false
+  - id: dashboard
+    role: read_only_ui
+    mt5_access: forbidden
+    can_change_scope: false
+  - id: validator
+    role: design_time_checks
+    mt5_access: read_only_preflight
+    can_change_scope: false
+
+validation_items:
+  - id: manifest.integrity
+    category: manifest
+    what: Required top-level sections, unique IDs, source references, and weights.
+    where: config/scope.gold.v1.yaml
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: manifest_integrity
+
+  - id: market.scope
+    category: market
+    what: XAUUSD spot-gold, long-only, M15 execution, H4 context, cash-equivalent account.
+    where: market
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: market_scope
+
+  - id: risk.limits
+    category: risk
+    what: 0.25% per trade, 1.5% daily halt, 8% max drawdown, risk exits veto-immune.
+    where: risk
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: risk_limits
+
+  - id: source.registry
+    category: sources
+    what: Source IDs are unique, types are supported, and referenced sources exist.
+    where: sources
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: source_registry
+
+  - id: source.legal
+    category: sources
+    what: Every source declares license, ToS risk, and legal notes.
+    where: sources[].legal
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: source_legal
+
+  - id: source.point_in_time
+    category: sources
+    what: Every source declares point-in-time behavior and knowledge time.
+    where: sources[].revision
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: source_point_in_time
+
+  - id: source.coverage
+    category: sources
+    what: Every source declares coverage history, cadence, and gap notes.
+    where: sources[].coverage
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: source_coverage
+
+  - id: source.mt5_xauusd
+    category: runtime
+    what: MT5 is reachable, logged into a demo account, and serves XAUUSD M15/H4 bars.
+    where: MT5 terminal
+    validation_class: MECHANICAL
+    required_for_m1: false
+    runtime_only: true
+    check:
+      kind: mt5_preflight
+      source_id: mt5_xauusd
+
+  - id: source.fred_dfii10
+    category: source
+    what: FRED DFII10 CSV is reachable and fresh.
+    where: https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: http_csv
+      source_id: fred_dfii10
+
+  - id: source.alfred_dfii10
+    category: source
+    what: ALFRED DFII10 vintage CSV is reachable and fresh.
+    where: https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=DFII10
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: http_csv
+      source_id: alfred_dfii10
+
+  - id: source.treasury_real_yield
+    category: source
+    what: U.S. Treasury real-yield CSV is reachable and fresh.
+    where: home.treasury.gov daily real yield curve CSV
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: http_csv
+      source_id: treasury_real_yield
+
+  - id: source.fred_dtwexbgs
+    category: source
+    what: FRED DTWEXBGS CSV is reachable and fresh.
+    where: https://fred.stlouisfed.org/graph/fredgraph.csv?id=DTWEXBGS
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: http_csv
+      source_id: fred_dtwexbgs
+
+  - id: source.alfred_dtwexbgs
+    category: source
+    what: ALFRED DTWEXBGS vintage CSV is reachable and fresh.
+    where: https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=DTWEXBGS
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: http_csv
+      source_id: alfred_dtwexbgs
+
+  - id: source.spdr_gld_archive
+    category: source
+    what: SPDR GLD archive XLSX is reachable, parseable, and fresh.
+    where: api.spdrgoldshares.com historical archive
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: http_xlsx
+      source_id: spdr_gld_archive
+
+  - id: source.cftc_cot
+    category: source
+    what: CFTC COT ZIP is reachable, contains annual.txt, and includes gold contract 088691.
+    where: cftc.gov deacot2026.zip
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: http_zip
+      source_id: cftc_cot
+
+  - id: source.cboe_gvz
+    category: source
+    what: CBOE GVZ CSV is reachable and fresh.
+    where: cdn.cboe.com GVZ_History.csv
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: http_csv
+      source_id: cboe_gvz
+
+  - id: source.fred_t10yie
+    category: source
+    what: FRED T10YIE CSV is reachable and fresh.
+    where: https://fred.stlouisfed.org/graph/fredgraph.csv?id=T10YIE
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: http_csv
+      source_id: fred_t10yie
+
+  - id: source.alfred_t10yie
+    category: source
+    what: ALFRED T10YIE vintage CSV is reachable and fresh.
+    where: https://alfred.stlouisfed.org/graph/alfredgraph.csv?id=T10YIE
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: http_csv
+      source_id: alfred_t10yie
+
+  - id: source.wgc_central_bank_manual
+    category: source
+    what: Manual WGC/IMF XLSX mechanical checks only; content is HUMAN_JUDGMENT.
+    where: data/manual/wgc/world_official_gold_holdings.xlsx
+    validation_class: HUMAN_JUDGMENT
+    required_for_m1: false
+    human_label: "derived from human-downloaded file; weight in entry score = 0; NOT consumed by the overseer (§9) in v1."
+    check:
+      kind: manual_xlsx
+      source_id: wgc_central_bank_manual
+
+  - id: fundamental.weights
+    category: fundamentals
+    what: Fundamental weights sum to 1.00; central bank and breakeven are 0.00.
+    where: fundamental_inputs
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: fundamental_weights
+
+  - id: fundamental.point_in_time
+    category: fundamentals
+    what: Every fundamental input declares field, transform, sign, PIT policy, and revision policy.
+    where: fundamental_inputs
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: fundamental_point_in_time
+
+  - id: fundamental.central_bank_policy
+    category: fundamentals
+    what: Central-bank gold is diagnostic, weight 0, HUMAN_JUDGMENT, and not consumed by the overseer.
+    where: fundamental_inputs[central_bank_gold]
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: central_bank_policy
+
+  - id: technical.timeframes
+    category: technical
+    what: Execution bar is M15 and context bar is H4.
+    where: technical
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: technical_timeframes
+
+  - id: technical.indicators
+    category: technical
+    what: Technical layer includes EMA, RSI, ATR, swing structure, and H4 context.
+    where: technical.indicators
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: technical_indicators
+
+  - id: fusion.policy
+    category: fusion
+    what: Fusion weights sum to 1.00 and entries require both fundamental and technical agreement.
+    where: fusion
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: fusion_policy
+
+  - id: overseer.policy
+    category: overseer
+    what: Overseer is a rule-based referee, never originates entries, and cannot override risk exits.
+    where: overseer
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: overseer_policy
+
+  - id: overseer.calibration
+    category: overseer
+    what: Calibration artifact exists, parses, and contains the current manifest hash.
+    where: config/calibration/gold.v1.overseer.json
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: calibration_artifact
+      path: config/calibration/gold.v1.overseer.json
+
+  - id: exits.precedence
+    category: exits
+    what: Exit precedence is 100/90/80/70/60/50/40/30 and risk exits are veto-immune.
+    where: exits
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: exit_precedence
+
+  - id: storage.sqlite
+    category: storage
+    what: SQLite uses WAL and single-writer mode with the required tables.
+    where: storage.sqlite
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: storage_sqlite
+
+  - id: storage.analytics
+    category: storage
+    what: Analytical storage is Parquet/DuckDB, not PostgreSQL.
+    where: storage.analytical
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: storage_analytics
+
+  - id: storage.schema
+    category: storage
+    what: SQL schema file exists and defines the required tables.
+    where: config/storage.schema.sql
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: storage_schema
+
+  - id: backtest.assumptions
+    category: backtest
+    what: Costs, next-bar fills, stop-first, no lookahead, PIT macro, and out-of-sample are declared.
+    where: backtest
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: backtest_assumptions
+
+  - id: analytics.baselines
+    category: analytics
+    what: Analytics baseline file exists and declares baselines and metrics.
+    where: config/analytics.baselines.yaml
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: yaml_file
+      path: config/analytics.baselines.yaml
+      required_keys: [baselines, metrics]
+
+  - id: analytics.dashboard_boundary
+    category: runtime
+    what: Dashboard has no MT5 access and cannot change scope.
+    where: analytics.dashboard
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: dashboard_boundary
+
+  - id: runtime.boundaries
+    category: runtime
+    what: Supervisor is the only scope changer; bot and dashboard cannot change scope.
+    where: runtime_processes
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: runtime_boundaries
+
+  - id: promotion.gates
+    category: promotion
+    what: 3 months demo, 100+ trades, positive OOS after costs, drawdown limits, drills, sign-off.
+    where: backtest.promotion_gates
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: promotion_gates
+
+  - id: human.signoff
+    category: human
+    what: Human has reviewed the per-item report and confirms HUMAN_JUDGMENT labels are honest.
+    where: report
+    validation_class: HUMAN_JUDGMENT
+    required_for_m1: true
+    human_label: Human sign-off is required before any promotion.

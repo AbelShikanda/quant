@@ -1,0 +1,52 @@
+# Analytics baselines for the gold quantamental bot.
+# These are comparison definitions, not fitted strategy parameters.
+baselines:
+  - id: buy_and_hold_gold
+    description: Long XAUUSD from the first in-sample bar to the end of the evaluation window.
+    implementation: continuous_long
+    costs: included
+  - id: simple_trend
+    description: Long when H4 EMA(20) > EMA(50); exit when the relationship flips.
+    implementation: h4_ema_cross
+    costs: included
+  - id: random_entry_control
+    description: Random long entries with the same holding-time distribution as the strategy.
+    implementation: monte_carlo_random_entry
+    seeds: [17, 29, 43]
+    costs: included
+
+metrics:
+  - id: total_return
+    direction: higher_is_better
+  - id: cagr
+    direction: higher_is_better
+  - id: sharpe
+    direction: higher_is_better
+  - id: sortino
+    direction: higher_is_better
+  - id: max_drawdown
+    direction: lower_is_better
+  - id: hit_rate
+    direction: higher_is_better
+  - id: payoff_ratio
+    direction: higher_is_better
+  - id: exposure
+    direction: informational
+  - id: trade_count
+    direction: informational
+  - id: cost_drag
+    direction: lower_is_better
+  - id: mae
+    direction: lower_is_better
+  - id: mfe
+    direction: higher_is_better
+
+evaluation:
+  minimum_trades: 100
+  minimum_demo_months: 3
+  out_of_sample_required: true
+  after_costs: true
+  drawdown_limits:
+    per_trade_equity_pct: 0.25
+    daily_loss_halt_pct: 1.5
+    max_drawdown_flatten_pct: 8.0

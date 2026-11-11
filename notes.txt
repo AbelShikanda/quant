@@ -1,0 +1,647 @@
+================================================================================
+PART 1 — THE SPECIFICATION (stable reference; submit with every brief)
+================================================================================
+
+I want to design a "quantamental" trading strategy and bot: fundamental analysis defines WHAT to consider, technical analysis 
+defines WHEN to act. we will intergrate no APIs yet we need to get information for the fundamentas, lets consider this even
+if we have to scrape for data.
+
+Before proposing anything, internalize these constraints:
+- Zero paid data. Free sources only.
+- Scraping is allowed and expected. Flag legal/ToS risk per source but assume I accept it.
+- I want SIGNAL QUALITY over signal quantity. Fewer, well-justified signals beat many weak ones.
+- The hardest part is SELL decisions. Treat exits as first-class, not an afterthought.
+- MARKET SCOPE (declare before anything else; every section's answer must be 
+  consistent with it):
+    * Asset class: XAUUSD spot gold (primary). A second instrument may be 
+      added later; the design must support a validated set of instruments, 
+      not just one.
+    * Instruments in scope: long-only spot, XAUUSD. No options, no futures, 
+      no leverage beyond stated account type.
+    * Bar frequency: intraday-capable; state the chosen execution bar and 
+      the higher-timeframe context bar explicitly.
+    * Account type: cash (state if margin is assumed instead).
+    * Geography/exchange: global OTC spot gold; name the specific free 
+      price sources you will scrape.
+  IMPORTANT — gold has no equity-style fundamentals (no SEC filings). 
+  You MUST explicitly redefine the "fundamental layer" for gold 
+  (e.g., real yields, USD strength, central-bank demand, ETF flows, 
+  COT positioning) and state which of these are scrapeable from free 
+  sources vs. which have weak/no free coverage. Do not attempt to map 
+  equity fundamental logic onto gold. If any scope field is left open, 
+  state the assumption at the top and flag which sections would change.
+
+I want to know:
+
+1. UNIVERSE DEFINITION
+   - How to define the tradable universe using free/scraped data. For gold, 
+     the "universe" is the instrument set + the macro/fundamental input set; 
+     define both.
+   - What minimum liquidity/quality filters to apply before any signal is 
+     generated (for XAUUSD: spread, session liquidity, data-source reliability).
+   - Where each fundamental input comes from (name specific free sources). 
+     For gold, name the free sources for real yields, USD index, ETF flows, 
+     COT, and central-bank data, and flag coverage gaps.
+
+2. FUNDAMENTAL LAYER (the "what")
+   - Which fundamental/macro metrics actually have edge for gold, ranked by 
+     evidence strength. State where evidence is weak.
+   - How to compute them from raw scraped data (not pre-chewed indicators).
+   - How to score/rank the instrument(s). Explicit formula or logic.
+   - How often to refresh this layer and why.
+
+3. TECHNICAL LAYER (the "when")
+   - Which technical signals are worth using for gold, and which are noise — 
+     justify each.
+   - How to compute them from free OHLCV data (name free sources).
+   - Entry trigger logic: exact conditions, not "use RSI."
+
+4. FUSION LOGIC
+   - Exactly how the two layers combine. Justify. What breaks if wrong.
+   - How to avoid double-counting correlated signals.
+   - Explicitly distinguish fusion from arbitration: §4 combines signals into 
+     a view; §9 decides who wins when views conflict. Do not blur these.
+
+5. EXIT LOGIC (treat this as the most important section)
+   - Separate exits into: (a) thesis invalidation [fundamental/macro], 
+     (b) stop-loss/risk [technical], (c) time-based, (d) profit-taking.
+   - For each, give exact trigger conditions.
+   - How to decide precedence when multiple exit rules fire.
+   - How to handle the case where fundamentals deteriorate but technicals still 
+     look fine, and vice versa.
+   - State how the overseer (§9) participates in exit precedence — does a 
+     technical stop override a still-valid fundamental thesis? Who has final 
+     say, and is that asymmetric for exits vs entries? (General expectation: 
+     risk-exits override, not get voted on.)
+   - Specify any analytics-driven adjustment to execution that affects exits or 
+     sizing. Every such rule needs a stated guardrail against feedback loops and 
+     overfitting.
+
+6. DATA PIPELINE & SCRAPING PLAN
+   - Concrete scraping architecture: what to scrape, from where, how often, 
+     how to store. For gold, this includes both price data and macro inputs.
+   - How to handle missing/revised fundamental data (point-in-time correctness 
+     to avoid lookahead bias — this is critical). Note that macro series are 
+     frequently revised; specify how revisions are handled.
+   - Rate-limiting, caching, and failure handling.
+   - DATA SOURCES — two distinct paths, both point-in-time stored:
+     * MARKET PRICE DATA (OHLCV/tick for XAUUSD): pulled by the bot from the 
+       locally running MT5 terminal via the MetaTrader5 Python library, then 
+       written into the local analytical layer. MT5 is the SOURCE of price 
+       data AND the execution venue — not merely an execution channel. The 
+       bot must not assume any MT5 chart is open or focused; it requires only 
+       the MT5 terminal process to be alive and logged in.
+     * MACRO / FUNDAMENTAL DATA (real yields, USD, ETF flows, COT, central-
+       bank data): scraped from external free sources, unrelated to MT5. 
+       Both paths write into the same point-in-time storage.
+   - STORAGE CONSTRAINT — Specify the persistence layer explicitly:
+     * Default: SQLite for point-in-time fundamental/macro snapshots, derived 
+       signals, arbitration decisions, and the execution/audit log. Enable WAL 
+       mode and enforce a single-writer discipline (only the scraper/ingestion 
+       module holds write access; everything else is read-only).
+     * Do NOT assume SQLite is the primary store for raw tick/minute OHLCV. If 
+       the strategy needs that volume, specify a separate Parquet/DuckDB 
+       analytical layer.
+     * Provide an abstraction layer so a future migration is a connection-string 
+       change, not a rewrite. Do NOT enable PostgreSQL now; define the trigger 
+       conditions under which migration would be justified (sustained multi-writer 
+       contention, >10GB with query slowdown, multi-instance sharing, replication/
+       backup requirements).
+     * If the dashboard needs to write state, funnel those writes through a 
+       queue to the sole writer — do not open a second write connection.
+
+7. VALIDATION & BIAS CONTROL
+   - How to backtest this without fooling myself.
+   - Specific lookahead/survivorship pitfalls in scraped fundamental/macro data 
+     (for gold: series revisions, publication lags, alignment of macro release 
+     timestamps to price bars).
+   - What out-of-sample and walk-forward setup to use.
+
+8. WHAT WOULD MAKE THIS FAIL
+   - The top failure modes, ranked, and how to detect each early.
+   - Include feedback loops from decisive analytics (§12b) as an explicit failure 
+     mode: analytics → execution → analytics, where the system learns to flatter 
+     itself. How is this detected early?
+   - Include, as a failure mode: incorrect re-scoping (§11d) — a wizard-driven 
+     scope change that leaves part of the system calibrated to the old scope, or 
+     that presents a scope change as fully validated when some manifest items 
+     were only human-acknowledged, not mechanically verified. How is this detected?
+
+9. ARBITRATION LAYER (the "overseer")
+   I do not want one data source or signal family to silently dominate. Design a 
+   central, unbiased arbiter that sits above both layers. Specify:
+   - Is it a rule-based referee, a scoring/weighting scheme, or a meta-model? 
+     Justify the choice.
+   - How it resolves DISAGREEMENT: fundamental says buy, technical says wait (and 
+     the reverse). Exact decision rule per case.
+   - How it stays unbiased:
+       * How to normalize/standardize each layer's scores so neither dominates by 
+         scale.
+       * How to detect and correct one layer persistently outvoting the other.
+       * How to prevent correlated signals from double-counting (overlaps with §4).
+   - What the overseer outputs: a single decision (enter/hold/exit), a confidence 
+     score, or both. Define the schema.
+   - State whether the overseer consumes performance/quality analytics as LIVE 
+     inputs to its weighting or veto decisions (§12b), and if so, define the 
+     feedback rule and its guardrails against overfitting.
+   - How the overseer is validated independently of the layers it judges.
+   - Failure mode: what happens when the overseer is wrong in a way both layers 
+     agree on (correlated blindness)?
+   - How the overseer's calibration is re-fit when market scope changes (§11d), 
+     and how the system proves the re-fit actually happened before live execution 
+     resumes.
+
+10. CODE ARCHITECTURE
+   Define the module boundaries and the data contract between them — NOT full code. 
+   Specify:
+   - Module list (universe, fundamental layer, technical layer, arbitration/overseer, 
+     exit engine, analytics/attribution, data pipeline, observability/dashboard, 
+     scope-configuration [manifest + validator + wizard], backtest harness) and each 
+     one's single responsibility.
+   - Include an observability/dashboard module (see §11) and an analytics/attribution 
+     module (see §12), each with its own emitted schema.
+   - The exact data schema each module emits and consumes (fields, types, timestamps). 
+     This is the part I care about most — I want interfaces fixed now.
+   - How point-in-time timestamps propagate through every contract (tie to §6/§7).
+   - Where state lives (positions, cooldowns, thesis-invalidation flags) and how 
+     modules read/write it without coupling.
+   - How the exit engine receives inputs from BOTH layers AND the overseer.
+   - What can be unit-tested per module in isolation, and the seam that makes 
+     backtesting swappable with live execution.
+   - Call out any place where modularization would HURT (over-abstraction) — be honest.
+   - Specify responsibilities and data contracts, not class names, module files, or 
+     language-level types. If a detail (e.g., how exit reasons are encoded, where a 
+     position manager lives) does not affect fusion, arbitration, or exit precedence, 
+     leave it to implementation.
+
+   10(a) RUNTIME TOPOLOGY & PROCESS AUTHORITY (spec-level)
+   - THREE PROCESSES, strict authority order:
+     (1) SUPERVISOR — starts/stops/restarts the bot; the ONLY component that 
+         may apply a scope change (stop → validate → apply → re-fit → re-baseline 
+         → restart per §11d). Owns lifecycle. Not the dashboard.
+     (2) BOT — strategy core, pipeline, logging, analytics, risk, execution. 
+         Headless. Owns the single-writer DB connection (§6), the MT5 connection, 
+         and all trading authority. Runs whether or not a dashboard is open.
+     (3) DASHBOARD — read-only web app. Connects to the bot's snapshot stream 
+         (WebSocket) and reads logs/analytics read-only. Renders. Does NOT start, 
+         stop, or drive the bot.
+   - THE MT5 CHART IS A PANEL, NOT A PROCESS AND NOT A CONTROL SURFACE. It is 
+     rendered inside the dashboard from bot-produced data, or viewed directly in 
+     MT5 for human observation only. There is no "start the chart" step and no 
+     external charting tool as control surface.
+   - THE DASHBOARD MUST NOT CONNECT TO MT5 DIRECTLY (no MetaTrader5 library call, 
+     no MT5 socket, no MT5-sourced price feed). Its only inputs are the bot's 
+     snapshot stream and the bot's read-only logs/analytics. Any MT5 state the 
+     dashboard displays (connection status, last tick, last fill) must originate 
+     from the bot's snapshot, not a dashboard-side MT5 query. This preserves a 
+     single source of truth, point-in-time consistency (§6/§7), and failure 
+     independence.
+   - START/STOP: the operator starts the bot via the supervisor. The dashboard is 
+     opened to observe. Trading halts via the kill-switch (§11c, new entries only, 
+     exits preserved) or via the supervisor. The dashboard is never the only path 
+     to stop trading.
+   - FAILURE INDEPENDENCE: if the bot crashes, the dashboard stays up and shows 
+     "bot down"; if the dashboard crashes, the bot keeps trading (and logging). 
+     Neither is a single point of failure for the other.
+   - SCOPE CHANGES ARE RESTARTS, NOT HOT-SWAPS. The wizard presents and the 
+     validator gates; the SUPERVISOR applies. The dashboard may initiate a 
+     scope-change request but cannot complete one without the supervisor and a 
+     passing validator; the request is logged.
+   - AUTHORITY RULE: any capability that mutates strategy state, config, or 
+     execution must be routed through the supervisor and the same risk/overseer 
+     modules as automated decisions. The dashboard's default posture remains 
+     read-only (§11c); every exception is enumerated, gated, and audited.
+
+11. OBSERVABILITY, LOGGING & LOCAL DASHBOARD
+   The chart cannot hold the fundamental thesis, the arbitration reasoning, or the 
+   execution audit. Design the surfaces that can.
+
+   (a) LOGGING vs CHART ANNOTATIONS
+       - Structured decision logs are the PRIMARY record. Every automated decision — 
+         entry, exit, arbitration outcome, signal rejection, exit-precedence resolution — 
+         must be written to a structured log with timestamp and the exact inputs that 
+         produced it.
+       - LOG VOLUME & DEDUPLICATION: define explicitly what counts as an "important" 
+         record (state transitions, decisions, rejections, overrides) vs. routine 
+         heartbeat/evaluation noise. Specify how near-duplicate records are suppressed 
+         or rolled up so the log remains high-signal and does not overcollect similar 
+         data.
+       - Chart comments/annotations are for SPARSE human-readable markers only. Do not 
+         use chart annotations as a substitute for logs, and justify any annotation you 
+         add as a chart-level signal.
+       - Define the log schema: event type, symbol, timestamp (with point-in-time 
+         provenance), layer(s) involved, decision, confidence, reason codes, and the 
+         input values that fired the rule.
+
+   (b) LOCAL BROWSER DASHBOARD
+       - Specify a local browser dashboard (e.g., FastAPI + WebSocket) as a READ-ONLY 
+         observability layer over the strategy and risk modules. It must not mutate 
+         strategy state or place orders directly (scope changes follow §11d, not this), 
+         and it must not connect to MT5 directly (§10a).
+       - It must display at minimum:
+           * Fundamental/macro scorecard per instrument (metrics, values, changes).
+           * Arbitration decisions with reasoning (including disagreement cases).
+           * Exit-rule precedence outcomes (which rule fired, why, what was overridden).
+           * Execution audit: intended order vs actual fill, timestamps, slippage.
+           * Prediction/decision reasons in structured form — the exact condition set 
+             and the overseer's confidence output.
+           * The descriptive and decisive analytics outputs from §12, with provenance 
+             and freshness flags.
+       - Define the snapshot schema the dashboard consumes, distinct from internal 
+         strategy state. The strategy layer should only produce a Snapshot; nothing in 
+         the dashboard/transport should know where the numbers came from.
+
+       (b2) DASHBOARD PRIORITY ORDER & VISUAL DESIGN
+       - PRIORITY ORDER (explicit, binding): 
+           (1) correctness and completeness of information,
+           (2) performance/latency,
+           (3) execution audit integrity,
+           (4) UI/UX polish and liveness.
+         Where these conflict, the higher priority wins. Liveness/animation is 
+         subordinate: if a visual flourish costs latency or obscures reasoning, cut 
+         the flourish. Do not let aesthetic goals dictate architecture.
+       - Visual theme: primarily DARK theme throughout (low-light, high-contrast for 
+         long monitoring sessions). Specify palette, contrast rules, and how color 
+         encodes state without relying on hue alone for critical distinctions.
+       - Liveness (subject to the priority order above):
+           * Live-updating panels streamed over WebSocket (not manual refresh).
+           * Animated transitions for state changes that show the FLOW of information 
+             and decisions rather than snapping between static frames.
+           * A visible decision stream / event ticker with enough detail to follow the 
+             reasoning chain in real time.
+           * Time-series micro-visuals (sparklines, confidence bands, contribution 
+             bars) that update continuously.
+       - Specify animation budget and performance constraints: frame rate targets, 
+         batching of high-frequency updates, overload avoidance at high volume 
+         (aggregation, throttling, focus modes), graceful degradation.
+       - Dark theme and liveness must NOT reduce readability of decision reasoning: 
+         reasoning text, provenance, and freshness flags remain legible at all times. 
+         Motion is for data flow, not decoration.
+       - Accessibility: contrast ratios, reduced-motion mode, colorblind-safe encoding.
+
+   (c) EXECUTION & INTERCEPTION
+       - Default posture: read-only. Any write or execution capability exposed via the 
+         dashboard (pause trading, cancel pending orders, force-flatten) must be 
+         enumerated, justified, gated by an explicit confirmation step, and routed 
+         through the same risk and arbitration modules as automated decisions.
+       - Do NOT expose a raw "submit order" endpoint. Every write action must be 
+         audited in the same structured log as automated decisions.
+       - Specify how an operator can INTERCEPT execution safely (e.g., a kill-switch 
+         that halts new entries but does not silently alter exits), and how that 
+         interception is logged.
+
+   (d) SCOPE CONFIGURATION & RE-SCOPING (manifest-first, wizard-last)
+       I want to change instruments (e.g., gold and one other, or replace an 
+       instrument) at will in the future, WITHOUT editing code. This must be safe, 
+       not merely convenient.
+
+       MANDATORY BUILD ORDER — the wizard is NOT the feature. Respect this order:
+         (1) SCOPE MANIFEST AS DATA — a machine-readable declaration of every 
+             component a scope change touches: universe/instrument set, 
+             fundamental/macro input sources and their coverage, technical bar 
+             definitions, fusion weights, overseer calibration, exit thresholds, 
+             storage schemas for new data types, backtest assumptions, analytics 
+             baselines, AND the three runtime processes from §10(a) with their 
+             authority boundaries. Each entry states: what it is, where it lives, 
+             and HOW TO CHECK IT.
+         (2) HEADLESS DEPENDENCY VALIDATOR — no UI. Given a proposed scope, runs 
+             each manifest check and returns PASS / FAIL / HUMAN_JUDGMENT per item. 
+             Mechanical checks only: does the source return data, does it parse, is 
+             it fresh, do required fields exist, does calibration data exist with 
+             adequate coverage, do schemas represent the new types, does the source 
+             publish revision history (point-in-time check).
+         (3) STRATEGY CORE reads its scope from the manifest — not hardcoded 
+             constants — so a future re-scope needs no code edit.
+         (4) LOGGING / ANALYTICS / DASHBOARD (§11a–c, §12).
+         (5) WIZARD — a thin UI over (2). It shows PASS/FAIL/HUMAN_JUDGMENT per 
+             manifest item, forces acknowledgment on human-judgment items, blocks 
+             on FAIL, and logs the transition.
+       Do not describe the wizard before specifying the manifest and validator. 
+       If the wizard is described first or as the primary artifact, that is a design 
+       error — state it as such.
+
+       HONESTY CLAUSE (binding):
+       - State explicitly which manifest items are mechanically validated, which 
+         require human judgment, and which cannot be validated at design time.
+       - The system must NEVER present a scope change as "validated" if any item is 
+         only human-acknowledged. The UI and the audit log must distinguish 
+         "mechanically verified" from "acknowledged but unverified" at all times.
+       - A green checkmark that hides a human-acknowledged item is a defect, not a 
+         success.
+
+       SAFE TRANSITION:
+       - stop → validate → apply new config → re-fit overseer calibration (§9) → 
+         re-baseline analytics (§12) → restart, logged as a configuration event in 
+         the same structured log, applied by the SUPERVISOR (§10a).
+       - State how in-flight positions are handled during re-scoping (hold, 
+         force-flatten, or block the change if positions are open).
+
+       POINT-IN-TIME INTEGRITY ACROSS SCOPES:
+       - Scope is a VERSIONED DIMENSION of every record. State how the system 
+         prevents a backtest or analytics run from silently mixing periods/
+         calibrations from different scopes.
+
+       MULTI-INSTRUMENT (when more than one is in scope):
+       - Per-instrument calibration, correlation, and cross-instrument risk; what 
+         the validator checks for each.
+
+       EXPLICITLY NOT ALLOWED (state how each is prevented):
+       - silent scope changes;
+       - scope changes without re-calibration;
+       - any path letting stale calibration from a previous scope leak into live 
+         execution;
+       - presenting a scope change as fully validated when items are only 
+         human-acknowledged.
+
+       AUDIT TRAIL:
+       - Every scope change, its per-item validation results (with the 
+         mechanically-verified / acknowledged-but-unverified distinction preserved), 
+         and its acknowledgment steps must be permanently logged and viewable.
+
+12. ANALYTICS & ATTRIBUTION
+   Split analytics into two categories and treat them differently:
+
+   (a) DESCRIPTIVE (reporting only)
+       - Per-layer attribution, hit rate, contribution, decay.
+       - Portfolio and time-series views.
+       - Backtest-vs-live reconciliation.
+       - These inform human judgment but do NOT alter execution automatically.
+       - Point-in-time consistency: displayed analytics must derive from the same 
+         point-in-time inputs the strategy used, not a separate recomputation. State 
+         how this is enforced.
+       - Sanity and staleness flags on every displayed metric. Do not display a metric 
+         without its provenance and freshness.
+
+   (b) DECISIVE (wired into execution)
+       - Analytics that feed live decisions: regime state, confidence calibration, 
+         per-layer reliability, drawdown state, exposure scaling.
+       - For each, state exactly which execution decision it changes and the rule.
+       - Mandatory guardrails against overfitting to recent performance, and how 
+         feedback loops (analytics → execution → analytics) are detected and broken.
+       - Which decisive analytics act autonomously vs. require human confirmation 
+         (tie to §11c).
+       - How decisive analytics are validated independently of the layers whose 
+         performance they measure.
+       - How decisive analytics are re-baselined when scope changes (§11d), and how 
+         the system proves re-baselining happened before execution resumes.
+
+Rules:
+- Be concrete. Every signal must have a computable definition.
+- Cite the free data source for every input.
+- Where evidence is weak, say so explicitly rather than inventing authority.
+- Do not pad. If a section has little to say, say little.
+
+
+================================================================================
+PART 2 — THE BRIEFS (submit ONE at a time; never all together)
+================================================================================
+
+HOW THE BRIEFS WORK:
+- Submit the Specification (Part 1) verbatim with each brief. It is the authority.
+- Submit exactly one brief per session. Never combine.
+- Each brief has a DONE condition (deliverables exist) and an ADVANCE GATE
+  (foundation is sound enough to start the next brief). They are different.
+- If the gate fails or is PARTIAL, stay in the same brief. Do not advance.
+- When a brief ends, ask the model to "report each ADVANCE GATE item as
+  PASS / PARTIAL / FAIL, with evidence." Decide yourself whether to advance.
+
+
+--------------------------------------------------------------------------------
+BRIEF 1 — Scope manifest + headless validator
+--------------------------------------------------------------------------------
+
+You are building v1 of the system specified in the attached document. The 
+document is the full specification and is the authority on WHAT the system 
+must be. This brief defines the FIRST MILESTONE and what "done" means for it.
+
+SCOPE FOR THIS MILESTONE:
+- v1 is XAUUSD spot gold ONLY. Multi-instrument is explicitly deferred; do 
+  not design for it now beyond what the spec requires.
+- Build Phase 1 only: the scope manifest as data, and the headless dependency 
+  validator. Do NOT build the wizard, the dashboard, or the strategy core yet.
+- Follow the mandatory build order in §11(d): manifest first, headless 
+  validator second, wizard last (and the wizard is out of scope here).
+- The manifest must include the three runtime processes and their authority 
+  boundaries from §10(a), since the validator will check them.
+
+DELIVERABLES:
+1. The scope manifest as a machine-readable file (YAML/JSON) covering every 
+   component listed in §11(d), each entry stating: what it is, where it lives, 
+   and HOW TO CHECK IT. Include the three runtime processes from §10(a).
+2. A headless validator (no UI) that, given a proposed scope, returns 
+   PASS / FAIL / HUMAN_JUDGMENT per manifest item, with a reason for each 
+   result. Mechanical checks only, per §11(d)(2).
+3. A short README: how to run the validator against (a) the current gold scope 
+   and (b) a deliberately broken scope (e.g., "scrape SEC EDGAR for gold"), 
+   with the expected outcomes.
+
+DONE MEANS:
+- The validator passes the gold scope and fails the broken scope, with a 
+  per-item report a human can read.
+- Every manifest item is labelled mechanically-validated, human-judgment, or 
+  not-validatable-at-design-time, per the honesty clause in §11(d).
+- No UI, no strategy logic, no dashboard.
+
+CONSTRAINTS FROM THE SPEC THAT APPLY NOW:
+- Zero paid data; free sources only; flag ToS risk per source.
+- Gold has no equity fundamentals — the fundamental-layer substitution 
+  (real yields, USD, ETF flows, COT, central-bank data) must be reflected in 
+  the manifest, with coverage gaps flagged.
+- MT5 is both data source and execution venue (§6). The manifest must include 
+  this, and the validator must be able to check the MT5 terminal is reachable.
+- No PostgreSQL; SQLite/DuckDB/Parquet assumptions per §6.
+- Do not pad. If something can't be validated mechanically, say so.
+
+OUT OF SCOPE (do not build):
+- Strategy core (§1–§5, §9), data pipeline implementation (§6), backtesting 
+  (§7), logging/dashboard (§11a–c), analytics (§12), the wizard (§11d(5)).
+
+ADVANCE GATE (do not start Brief 2 until all three hold):
+- Done-condition above is met.
+- A HUMAN has read the per-item validator report and confirmed the 
+  human-judgment labels are honest (not over- or under-claimed).
+- The broken-scope test fails for the RIGHT reason (a specific missing 
+  source/field/calibration), not a generic error or crash.
+If any gate item fails, fix within Brief 1; do not advance.
+
+
+--------------------------------------------------------------------------------
+BRIEF 2 — Strategy core for gold, manifest-driven
+--------------------------------------------------------------------------------
+
+This is MILESTONE 2. The attached spec remains the authority. The manifest 
+and validator from Milestone 1 are now fixed inputs — do not redesign them.
+
+SCOPE FOR THIS MILESTONE:
+- XAUUSD spot gold only. Single instrument. No multi-instrument code.
+- Build the strategy core: universe (§1), fundamental/macro layer (§2), 
+  technical layer (§3), fusion (§4), arbitration/overseer (§9), exits (§5).
+- Every parameter that the manifest declares must be READ FROM THE MANIFEST, 
+  not hardcoded. A manifest value change must alter behavior with no code edit.
+- The core runs HEADLESS with no dashboard present, proving §10(a)'s claim 
+  that the bot does not require a dashboard to trade.
+
+ORDER WITHIN THIS MILESTONE:
+data pipeline (§6, minimal end-to-end, including MT5 pull for OHLCV) → 
+fundamental/macro layer → technical layer → fusion → overseer → exits. 
+Exits last on purpose: they depend on everything upstream, and the spec says 
+exits are the hardest part.
+
+DELIVERABLES:
+1. End-to-end runnable strategy for gold, producing entries, holds, and exits, 
+   with reasons per decision, using the schemas from §10.
+2. A demonstration that changing a manifest parameter (e.g., a refresh cadence, 
+   a fusion weight, an exit threshold) changes behavior without code edits.
+3. A point-in-time test demonstrating no lookahead on a small sample, per §7.
+4. Evidence that exit precedence works, including the fundamental-deteriorates-
+   vs-technicals-fine and reverse cases, per §5.
+
+DONE MEANS:
+- Strategy runs end-to-end on gold from manifest config, headless.
+- No-lookahead is demonstrable on a sample.
+- Exit precedence resolves correctly in both disagreement cases.
+- Overseer output schema fixed and documented per §9.
+- No dashboard, no wizard, no analytics (§12) beyond what exits require.
+
+CONSTRAINTS:
+- Follow §5's asymmetry: risk-exits override, they do not get voted on.
+- Follow §9: the overseer is not allowed to silently become a third signal 
+  family; it arbitrates, it does not originate.
+- MT5 is required to be alive and logged in for both data pull and execution, 
+  per §6 and §10(a). The bot must not assume any chart is open.
+- If any part of the core can't be built because a manifest item is only 
+  human-judgment, stop and report — do not paper over it.
+
+ADVANCE GATE (do not start Brief 3 until ALL of the following hold):
+- Done-condition above is met in full — not 3 of 4 items.
+- The manifest-parameter demonstration actually changes behavior in a way a 
+  human can see, not just in a log line.
+- The no-lookahead demonstration covers at least one macro series known to be 
+  revised (so the test is non-trivial).
+- Exit precedence is demonstrated in BOTH disagreement cases, not one.
+If any item is partial, stay in Brief 2. Brief 3 assumes a working core; 
+a partial core will corrupt the pipeline and analytics built on it.
+
+
+--------------------------------------------------------------------------------
+BRIEF 3 — Data pipeline hardening, logging, analytics
+--------------------------------------------------------------------------------
+
+This is MILESTONE 3. The attached spec is the authority. The gold strategy 
+core from Milestone 2 runs; do not redesign it.
+
+SCOPE FOR THIS MILESTONE:
+- Harden the data pipeline (§6): rate-limiting, caching, failure handling, 
+  revision handling for macro series, point-in-time storage per §6's STORAGE 
+  CONSTRAINT (SQLite + WAL + single-writer; Parquet/DuckDB for OHLCV if needed). 
+  Include robust MT5 reconnect/backoff for the market-data path.
+- Build structured decision logging (§11a): primary record, log volume & 
+  deduplication, log schema, no reliance on chart annotations.
+- Build analytics (§12): descriptive first, then decisive, with feedback-loop 
+  guardrails and the autonomous-vs-human-confirmation split.
+
+DELIVERABLES:
+1. Hardened pipeline with the storage constraint implemented as specified, 
+   including MT5 disconnect/reconnect handling.
+2. Structured log covering every decision type in §11(a), deduplicated per 
+   §11(a)'s rules.
+3. Descriptive analytics (§12a) with point-in-time consistency and 
+   provenance/freshness flags.
+4. Decisive analytics (§12b) with the overfitting/feedback guardrails stated 
+   and enforced.
+5. Reconstruction test: from logs alone, reconstruct why any past decision 
+   happened, without the dashboard.
+
+DONE MEANS:
+- Logs alone explain past decisions.
+- Analytics carry provenance and freshness; nothing is displayed without them.
+- Decisive analytics are clearly separated from descriptive, and their 
+  execution effects are listed explicitly per §12(b).
+- No dashboard, no wizard.
+
+OUT OF SCOPE:
+- Dashboard (§11b), execution/interception UI (§11c), wizard (§11d).
+
+ADVANCE GATE (do not start Brief 4 until ALL of the following hold):
+- Done-condition above is met.
+- The reconstruction test succeeds for a decision chosen by a HUMAN, not a 
+  decision chosen by the model.
+- Decisive analytics (§12b) have their execution effects listed explicitly and 
+  each one has a stated guardrail — no "TBD" guardrails.
+- The log-deduplication rules produce a visibly high-signal log on a sample; 
+  a human has confirmed the log does not overcollect near-duplicates.
+Brief 4's dashboard renders what Brief 3 produced. If the logs/analytics are 
+weak, the dashboard will faithfully render weakness.
+
+
+--------------------------------------------------------------------------------
+BRIEF 4 — Read-only dashboard, then the wizard
+--------------------------------------------------------------------------------
+
+This is MILESTONE 4. The attached spec is the authority. The strategy core, 
+pipeline, logs, and analytics are fixed inputs.
+
+Build in two sub-phases; do not merge them.
+
+4a — READ-ONLY DASHBOARD (§11b, §11b2, §11c, §10a):
+- Local browser dashboard, READ-ONLY, over the strategy and risk modules.
+- Renders the snapshot schema only; must not mutate state or place orders.
+- MUST NOT connect to MT5 directly (§10a); all MT5 state shown comes from the 
+  bot's snapshot.
+- Displays the panels listed in §11(b), including §12 analytics with 
+  provenance/freshness.
+- Priority order binding: information → performance → execution audit → 
+  UI/UX/liveness. Liveness is subordinate.
+- Dark theme; liveness subject to the animation budget and performance 
+  constraints; reasoning/provenance/freshness legible at all times; 
+  accessibility per §11(b2).
+- Execution/interception per §11(c): read-only default, no raw order endpoint, 
+  kill-switch halts new entries without silently altering exits, all write 
+  actions audited.
+
+DONE (4a):
+- Dashboard renders live from snapshot.
+- No path mutates strategy state.
+- Audit shows intended vs actual for any write action.
+- Test: with MT5 disconnected, the dashboard stays up and shows "MT5 down" 
+  sourced from the bot's snapshot — proving it does not talk to MT5 directly.
+- Test: with the bot stopped, the dashboard shows "bot down" and does not 
+  attempt to drive anything.
+
+4b — WIZARD AS A THIN UI OVER THE MILESTONE-1 VALIDATOR (§11d, §10a):
+- The manifest and validator are already built. The wizard is a presentation 
+  layer over them. Do NOT re-implement validation inside the wizard.
+- Shows PASS/FAIL/HUMAN_JUDGMENT per manifest item; blocks on FAIL; forces 
+  acknowledgment on human-judgment items; logs the transition.
+- Honesty clause enforced in UI and audit: the UI and log must distinguish 
+  "mechanically verified" from "acknowledged but unverified" at all times. 
+  A green checkmark hiding a human-acknowledged item is a defect.
+- Safe transition per §11(d), applied by the SUPERVISOR (§10a): 
+  stop → validate → apply → re-fit overseer → re-baseline analytics → restart, 
+  logged.
+- Point-in-time integrity across scopes: scope is a versioned dimension of 
+  every record.
+- The wizard may initiate a scope-change request; only the supervisor can 
+  complete one, and only with a passing validator.
+
+DONE (4b):
+- A scope change either completes with every item mechanically verified or 
+  human-acknowledged-and-logged, or blocks with a specific reason.
+- No silent green checkmarks.
+- The wizard cannot bypass the validator.
+
+OUT OF SCOPE:
+- Multi-instrument live trading (design for it per spec, but do not enable it).
+- Any mutation path that bypasses §11c, §11d, or §10a.
+
+ADVANCE GATE (end of the v1 build; nothing to advance to):
+- 4a and 4b done-conditions both met.
+- The honesty clause is demonstrably enforced: a scope change with at least 
+  one human-judgment item shows that item as "acknowledged but unverified" in 
+  BOTH the UI and the audit log — verified by a HUMAN, not asserted by the model.
+- The wizard cannot bypass the validator: demonstrated by attempting a 
+  FAIL-item scope change and confirming it blocks.
+- The dashboard's failure independence is demonstrated: killing MT5 leaves the 
+  dashboard up; killing the dashboard leaves the bot trading.
+This is the end of v1. Do not start multi-instrument work without a new 
+milestone brief.

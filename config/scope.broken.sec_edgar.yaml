@@ -1,0 +1,415 @@
+manifest_version: 1
+scope_id: broken.sec_edgar_gold.v1
+scope_version: 1
+status: broken_test
+created_at: "2026-11-11"
+authority: notes.txt
+description: >-
+  Deliberately broken scope used to prove the validator fails for specific reasons.
+  It attempts to use SEC EDGAR equity fundamentals as a gold input and violates the
+  account, risk, exit, storage, and promotion rules.
+
+market:
+  symbol: XAUUSD
+  instrument_class: equity
+  venue: FBS-Demo
+  direction: long_short
+  execution_bar: H1
+  context_bar: D1
+  account_model: leveraged
+  max_notional_exposure_ratio: 5.0
+  timezone: UTC
+  broker_time_calibration_required: false
+  chart_assumption: active_chart
+  real_money_allowed: true
+
+risk:
+  per_trade_equity_pct: 2.0
+  daily_loss_halt_pct: 10.0
+  max_drawdown_flatten_pct: 25.0
+  risk_exits_veto_immune: false
+  daily_halt_action: continue
+  max_drawdown_action: continue
+  position_sizing: martingale
+  leverage_cap: 10.0
+
+sources:
+  - id: sec_edgar_gold
+    name: SEC EDGAR gold fundamentals
+    type: sec_edgar
+    role: fundamental_input
+    required_for_m1: true
+    required_for_live: true
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000000000&type=10-K
+    legal:
+      license: unknown
+      tos_risk: high
+      notes: Scraping SEC EDGAR for gold is not a valid XAUUSD fundamental source.
+    revision:
+      point_in_time: false
+      knowledge_time: unknown
+      vintage_source: null
+      notes: No revision model.
+    coverage:
+      history_start: unknown
+      cadence: quarterly
+      gap_notes: Not applicable to gold.
+    checks: []
+
+fundamental_inputs:
+  - id: eps_growth
+    name: EPS growth
+    weight: 0.55
+    role: primary
+    source_ids: [sec_edgar_gold]
+    field: eps_growth
+    transform: yoy
+    sign: positive
+    pit_policy: None.
+    revision_policy: None.
+    coverage_gap: Equities are out of scope.
+  - id: gold_price_momentum
+    name: Gold price momentum
+    weight: 0.45
+    role: primary
+    source_ids: [sec_edgar_gold]
+    field: close
+    transform: momentum_20d
+    sign: positive
+    pit_policy: None.
+    revision_policy: None.
+    coverage_gap: No price source.
+
+technical:
+  execution_bar: H1
+  context_bar: D1
+  indicators:
+    - id: macd
+      timeframe: H1
+      params: {fast: 12, slow: 26, signal: 9}
+
+fusion:
+  fundamental_weight: 0.70
+  technical_weight: 0.70
+  entry_requires_both: false
+  conflict_policy: force_trade
+  overseer_can_originate: true
+
+overseer:
+  type: meta_model
+  originates_entries: true
+  arbitrates: false
+  risk_exits_veto_immune: false
+  calibration:
+    artifact: config/calibration/broken.sec_edgar.json
+    required_keys: [artifact_version, scope_id, manifest_hash, status, fit_window, metrics, notes]
+    allow_not_fitted: false
+  authority:
+    may_change_scope: true
+    may_override_risk_exit: true
+    may_emit_advisory_exit: true
+
+exits:
+  risk_exits_veto_immune: false
+  sell_decisions_are_first_class: false
+  precedence:
+    - priority: 90
+      id: hard_or_trailing_stop
+      action: close
+    - priority: 80
+      id: thesis_invalidated
+      action: close
+    - priority: 70
+      id: thesis_weakened
+      action: reduce_or_close
+    - priority: 60
+      id: time_stop
+      action: close
+    - priority: 50
+      id: technical_or_profit_trail
+      action: trail_or_close
+    - priority: 40
+      id: profit_take
+      action: close
+    - priority: 30
+      id: advisory
+      action: notify_only
+
+storage:
+  sqlite:
+    path: data/sqlite/broken.sqlite
+    journal_mode: DELETE
+    single_writer: false
+    tables: [snapshots]
+  analytical:
+    type: postgresql
+    path: postgresql://localhost/broken
+  schema:
+    path: config/storage.broken.sql
+    required_tables: [snapshots]
+
+backtest:
+  execution_bar: H1
+  context_bar: D1
+  costs: {}
+  fill_rule: same_bar_close
+  stop_first: false
+  no_lookahead: false
+  point_in_time_macro: false
+  out_of_sample: false
+  walk_forward: false
+  min_demo_months: 0
+  min_trades: 1
+  promotion_gates: [v1_complete]
+
+analytics:
+  baselines:
+    path: config/analytics.broken.yaml
+    required_keys: [baselines, metrics]
+  dashboard:
+    mt5_access: allowed
+    scope_change: allowed
+    read_only: false
+
+runtime_processes:
+  - id: supervisor
+    role: lifecycle_and_scope
+    mt5_access: allowed
+    can_change_scope: false
+    only_scope_changer: false
+  - id: bot
+    role: strategy_and_execution
+    mt5_access: allowed
+    can_change_scope: true
+  - id: dashboard
+    role: read_only_ui
+    mt5_access: allowed
+    can_change_scope: true
+
+validation_items:
+  - id: manifest.integrity
+    category: manifest
+    what: Required top-level sections and references.
+    where: config/scope.broken.sec_edgar.yaml
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: manifest_integrity
+
+  - id: market.scope
+    category: market
+    what: XAUUSD spot-gold, long-only, M15 execution, H4 context, cash-equivalent account.
+    where: market
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: market_scope
+
+  - id: risk.limits
+    category: risk
+    what: 0.25% per trade, 1.5% daily halt, 8% max drawdown, risk exits veto-immune.
+    where: risk
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: risk_limits
+
+  - id: source.registry
+    category: sources
+    what: Source IDs are unique, types are supported, and referenced sources exist.
+    where: sources
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: source_registry
+
+  - id: source.legal
+    category: sources
+    what: Every source declares license, ToS risk, and legal notes.
+    where: sources[].legal
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: source_legal
+
+  - id: source.point_in_time
+    category: sources
+    what: Every source declares point-in-time behavior and knowledge time.
+    where: sources[].revision
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: source_point_in_time
+
+  - id: source.coverage
+    category: sources
+    what: Every source declares coverage history, cadence, and gap notes.
+    where: sources[].coverage
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: source_coverage
+
+  - id: fundamental.weights
+    category: fundamentals
+    what: Fundamental weights sum to 1.00; central bank and breakeven are 0.00.
+    where: fundamental_inputs
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: fundamental_weights
+
+  - id: fundamental.point_in_time
+    category: fundamentals
+    what: Every fundamental input declares field, transform, sign, PIT policy, and revision policy.
+    where: fundamental_inputs
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: fundamental_point_in_time
+
+  - id: fundamental.central_bank_policy
+    category: fundamentals
+    what: Central-bank gold is diagnostic, weight 0, HUMAN_JUDGMENT, and not consumed by the overseer.
+    where: fundamental_inputs[central_bank_gold]
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: central_bank_policy
+
+  - id: technical.timeframes
+    category: technical
+    what: Execution bar is M15 and context bar is H4.
+    where: technical
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: technical_timeframes
+
+  - id: technical.indicators
+    category: technical
+    what: Technical layer includes EMA, RSI, ATR, swing structure, and H4 context.
+    where: technical.indicators
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: technical_indicators
+
+  - id: fusion.policy
+    category: fusion
+    what: Fusion weights sum to 1.00 and entries require both fundamental and technical agreement.
+    where: fusion
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: fusion_policy
+
+  - id: overseer.policy
+    category: overseer
+    what: Overseer is a rule-based referee, never originates entries, and cannot override risk exits.
+    where: overseer
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: overseer_policy
+
+  - id: overseer.calibration
+    category: overseer
+    what: Calibration artifact exists, parses, and contains the current manifest hash.
+    where: config/calibration/broken.sec_edgar.json
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: calibration_artifact
+      path: config/calibration/broken.sec_edgar.json
+
+  - id: exits.precedence
+    category: exits
+    what: Exit precedence is 100/90/80/70/60/50/40/30 and risk exits are veto-immune.
+    where: exits
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: exit_precedence
+
+  - id: storage.sqlite
+    category: storage
+    what: SQLite uses WAL and single-writer mode with the required tables.
+    where: storage.sqlite
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: storage_sqlite
+
+  - id: storage.analytics
+    category: storage
+    what: Analytical storage is Parquet/DuckDB, not PostgreSQL.
+    where: storage.analytical
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: storage_analytics
+
+  - id: storage.schema
+    category: storage
+    what: SQL schema file exists and defines the required tables.
+    where: config/storage.broken.sql
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: storage_schema
+
+  - id: backtest.assumptions
+    category: backtest
+    what: Costs, next-bar fills, stop-first, no lookahead, PIT macro, and out-of-sample are declared.
+    where: backtest
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: backtest_assumptions
+
+  - id: analytics.baselines
+    category: analytics
+    what: Analytics baseline file exists and declares baselines and metrics.
+    where: config/analytics.broken.yaml
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: yaml_file
+      path: config/analytics.broken.yaml
+      required_keys: [baselines, metrics]
+
+  - id: analytics.dashboard_boundary
+    category: runtime
+    what: Dashboard has no MT5 access and cannot change scope.
+    where: analytics.dashboard
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: dashboard_boundary
+
+  - id: runtime.boundaries
+    category: runtime
+    what: Supervisor is the only scope changer; bot and dashboard cannot change scope.
+    where: runtime_processes
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: runtime_boundaries
+
+  - id: promotion.gates
+    category: promotion
+    what: 3 months demo, 100+ trades, positive OOS after costs, drawdown limits, drills, sign-off.
+    where: backtest.promotion_gates
+    validation_class: MECHANICAL
+    required_for_m1: true
+    check:
+      kind: promotion_gates
+
+  - id: human.signoff
+    category: human
+    what: Human has reviewed the per-item report and confirms HUMAN_JUDGMENT labels are honest.
+    where: report
+    validation_class: HUMAN_JUDGMENT
+    required_for_m1: true
+    human_label: Human sign-off is required before any promotion.
