@@ -1,7 +1,7 @@
 {
   "artifact_version": 1,
   "scope_id": "gold.v1",
-  "manifest_hash": "86f15cdd58e2b6593fb3f9f680e4433221fa88cfc122baef0ba81ae07209c1fd",
+  "manifest_hash": "d531a2492322e8aba241246ea8c5b883144075d31cfb3d34f99c0039d6d1eec8",
   "status": "not_fitted",
   "fit_window": null,
   "metrics": {},

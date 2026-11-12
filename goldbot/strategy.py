@@ -39,6 +39,8 @@ class SizingResult:
     notional: float
     max_notional: float
     reason: str
+    risk_pct: float = 0.0
+    min_lot_risk_pct: float = 0.0
 
 
 class StrategyEngine:
@@ -62,6 +64,9 @@ class StrategyEngine:
                 "max_notional_exposure_ratio",
                 self.market.get("max_notional_exposure_ratio", 1.0),
             )
+        )
+        self.min_lot_risk_cap_pct = float(
+            self.sizing_config.get("min_lot_risk_cap_pct", 0.0)
         )
 
     def decide(
@@ -195,8 +200,10 @@ class StrategyEngine:
             take_profit=take_profit,
             reasons=[
                 f"entry approved at {entry_price:.2f}",
-                f"volume {sizing.volume:.2f} lots, risk {sizing.risk_amount:.2f}, "
-                f"notional {sizing.notional:.2f} <= {sizing.max_notional:.2f}",
+                f"volume {sizing.volume:.2f} lots, risk {sizing.risk_amount:.2f} "
+                f"({sizing.risk_pct:.4f}% of equity), notional {sizing.notional:.2f} "
+                f"<= {sizing.max_notional:.2f}",
+                f"sizing: {sizing.reason}",
             ],
         )
 
@@ -204,24 +211,49 @@ class StrategyEngine:
         risk_pct = float(self.risk.get("per_trade_equity_pct", 0.25))
         risk_amount = equity * risk_pct / 100.0
         stop_distance = self.exit_engine.stop_atr_multiple * atr_value
-        if stop_distance <= 0.0 or entry_price <= 0.0:
-            return SizingResult(0.0, risk_amount, stop_distance, 0.0, 0.0, "invalid stop distance")
-        raw_volume = risk_amount / (stop_distance * self.contract_size_oz)
-        volume = self._floor_lot(raw_volume)
-        max_notional = equity * self.max_notional_ratio
-        if volume <= 0.0 or volume < self.min_lot:
+        if stop_distance <= 0.0 or entry_price <= 0.0 or equity <= 0.0:
             return SizingResult(
                 0.0,
                 risk_amount,
                 stop_distance,
                 0.0,
-                max_notional,
-                (
-                    "no trade: risk-sized volume is below the broker minimum lot "
-                    f"({self.min_lot:.2f}); cash-equivalent/no-leverage account cannot "
-                    f"hold the minimum notional"
-                ),
+                0.0,
+                "invalid stop distance, entry price, or equity",
+                risk_pct=risk_pct,
             )
+        max_notional = equity * self.max_notional_ratio
+        min_lot_risk = stop_distance * self.min_lot * self.contract_size_oz
+        min_lot_risk_pct = min_lot_risk / equity * 100.0
+        raw_volume = risk_amount / (stop_distance * self.contract_size_oz)
+        volume = self._floor_lot(raw_volume)
+        reason: str | None = None
+
+        if volume < self.min_lot:
+            if min_lot_risk_pct <= self.min_lot_risk_cap_pct + 1e-12:
+                volume = self.min_lot
+                risk_amount = min_lot_risk
+                risk_pct = min_lot_risk_pct
+                reason = (
+                    f"sized at broker minimum lot {self.min_lot:.2f}; actual stop risk "
+                    f"{min_lot_risk_pct:.4f}% <= min-lot cap {self.min_lot_risk_cap_pct:.4f}%"
+                )
+            else:
+                return SizingResult(
+                    0.0,
+                    risk_amount,
+                    stop_distance,
+                    0.0,
+                    max_notional,
+                    (
+                        "no trade: minimum lot stop risk "
+                        f"{min_lot_risk_pct:.4f}% of equity exceeds the min-lot risk cap "
+                        f"{self.min_lot_risk_cap_pct:.4f}% (minimum lot {self.min_lot:.2f}, "
+                        f"stop distance {stop_distance:.4f}, equity {equity:.2f})"
+                    ),
+                    risk_pct=risk_pct,
+                    min_lot_risk_pct=min_lot_risk_pct,
+                )
+
         notional = volume * self.contract_size_oz * entry_price
         if notional > max_notional:
             capped = math.floor(
@@ -236,19 +268,35 @@ class StrategyEngine:
                     0.0,
                     max_notional,
                     (
-                        "no trade: minimum lot notional exceeds the cash-equivalent "
-                        f"exposure cap ({max_notional:.2f})"
+                        f"no trade: minimum lot notional {notional:.2f} exceeds the "
+                        f"notional exposure cap {max_notional:.2f} "
+                        f"(equity {equity:.2f} x {self.max_notional_ratio:.2f}:1)"
                     ),
+                    risk_pct=risk_pct,
+                    min_lot_risk_pct=min_lot_risk_pct,
                 )
             volume = capped
             notional = volume * self.contract_size_oz * entry_price
+            reason = (
+                f"sized and capped by the notional exposure ratio "
+                f"{self.max_notional_ratio:.2f}:1"
+            )
+        elif reason is None:
+            reason = "sized"
+
+        # Report the risk actually implied by the final, lot-rounded volume.
+        risk_amount = stop_distance * volume * self.contract_size_oz
+        risk_pct = risk_amount / equity * 100.0
+
         return SizingResult(
             volume=round(volume, 8),
             risk_amount=risk_amount,
             stop_distance=stop_distance,
             notional=notional,
             max_notional=max_notional,
-            reason="sized",
+            reason=reason,
+            risk_pct=risk_pct,
+            min_lot_risk_pct=min_lot_risk_pct,
         )
 
     def _floor_lot(self, volume: float) -> float:

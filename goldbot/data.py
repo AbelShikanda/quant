@@ -643,9 +643,10 @@ def load_fred_csv(
 ) -> list[MacroObservation]:
     """Load a FRED/ALFRED-style CSV.
 
-    If a ``vintage_date`` or ``knowledge_time`` column exists, it is used as the
-    knowledge time.  Otherwise the observation date plus a conservative release
-    lag is used.  This is a latest-revision live loader, not a vintage replay.
+    If a ``vintage_date``, ``knowledge_time``, or ALFRED ``realtime_start``
+    column exists, it is used as the knowledge time.  Otherwise the observation
+    date plus a conservative release lag is used.  ALFRED rows are therefore
+    replayed at their vintage release time, not at the observation date.
     """
     reader = csv.DictReader(io.StringIO(text))
     if reader.fieldnames is None:
@@ -664,7 +665,12 @@ def load_fred_csv(
         if not raw_date or raw_value in {"", ".", "NA"}:
             continue
         observation_date = date.fromisoformat(raw_date[:10])
-        knowledge_raw = (row.get("vintage_date") or row.get("knowledge_time") or "").strip()
+        knowledge_raw = (
+            row.get("vintage_date")
+            or row.get("knowledge_time")
+            or row.get("realtime_start")
+            or ""
+        ).strip()
         if knowledge_raw:
             knowledge_time = datetime.fromisoformat(knowledge_raw.replace("Z", "+00:00"))
         else:
@@ -680,7 +686,11 @@ def load_fred_csv(
                 observation_date=observation_date,
                 value=float(raw_value),
                 source_id=source_id,
-                vintage=row.get("vintage_date") or None,
+                vintage=(
+                    row.get("vintage_date")
+                    or row.get("realtime_start")
+                    or None
+                ),
             )
         )
     return observations
@@ -754,6 +764,45 @@ def load_gld_xlsx(
         workbook.close()
 
 
+def load_gvz_csv(
+    text: str,
+    *,
+    series_id: str = "GVZ_CLOSE",
+    source_id: str = "cboe_gvz",
+) -> list[MacroObservation]:
+    """Load CBOE GVZ daily history as a risk/vol diagnostic series."""
+    reader = csv.DictReader(io.StringIO(text))
+    observations: list[MacroObservation] = []
+    for row in reader:
+        raw_date = (row.get("DATE") or row.get("Date") or "").strip()
+        raw_value = (
+            row.get("GVZ")
+            or row.get("CLOSE")
+            or row.get("Close")
+            or ""
+        ).strip()
+        if not raw_date or not raw_value:
+            continue
+        try:
+            observation_date = datetime.strptime(raw_date, "%m/%d/%Y").date()
+        except ValueError:
+            observation_date = date.fromisoformat(raw_date[:10])
+        observations.append(
+            MacroObservation(
+                series_id=series_id,
+                knowledge_time_utc=datetime.combine(
+                    observation_date + timedelta(days=1),
+                    time(0, 0),
+                    tzinfo=timezone.utc,
+                ),
+                observation_date=observation_date,
+                value=float(raw_value.replace(",", "")),
+                source_id=source_id,
+            )
+        )
+    return observations
+
+
 def load_cot_csv(
     text: str,
     *,
@@ -803,25 +852,37 @@ def load_macro_directory(path: str | Path) -> PointInTimeStore:
     """Load a small local macro directory.
 
     Recognised files: ``DFII10.csv``, ``DTWEXBGS.csv``, ``T10YIE.csv``,
-    ``GLD.xlsx``, ``COT.csv``, ``COT.zip``.  Missing files are simply absent;
-    the fundamental engine will report them as missing/stale rather than fill
-    them silently.
+    their ALFRED vintage equivalents (``ALFRED_DFII10.csv``, etc.),
+    ``GLD.xlsx``, ``COT.csv``, ``COT.zip``, ``GVZ.csv``.  When an ALFRED vintage file is
+    present it takes precedence over the latest-revision FRED file for the same
+    series, so a backtest cannot accidentally use a later revision.  Missing
+    files are simply absent; the fundamental engine reports them as
+    missing/stale rather than filling them silently.
     """
     root = Path(path)
     store = PointInTimeStore()
     fred_files = {
-        "DFII10.csv": ("DFII10", "fred_dfii10"),
-        "DTWEXBGS.csv": ("DTWEXBGS", "fred_dtwexbgs"),
-        "T10YIE.csv": ("T10YIE", "fred_t10yie"),
+        "DFII10": ("DFII10.csv", "ALFRED_DFII10.csv", "fred_dfii10", "alfred_dfii10"),
+        "DTWEXBGS": ("DTWEXBGS.csv", "ALFRED_DTWEXBGS.csv", "fred_dtwexbgs", "alfred_dtwexbgs"),
+        "T10YIE": ("T10YIE.csv", "ALFRED_T10YIE.csv", "fred_t10yie", "alfred_t10yie"),
     }
-    for filename, (series_id, source_id) in fred_files.items():
-        file_path = root / filename
-        if file_path.exists():
+    for series_id, (fred_name, alfred_name, fred_source, alfred_source) in fred_files.items():
+        alfred_path = root / alfred_name
+        fred_path = root / fred_name
+        if alfred_path.exists():
             store.add_many(
                 load_fred_csv(
-                    file_path.read_text(encoding="utf-8"),
+                    alfred_path.read_text(encoding="utf-8"),
                     series_id=series_id,
-                    source_id=source_id,
+                    source_id=alfred_source,
+                )
+            )
+        elif fred_path.exists():
+            store.add_many(
+                load_fred_csv(
+                    fred_path.read_text(encoding="utf-8"),
+                    series_id=series_id,
+                    source_id=fred_source,
                 )
             )
     gld_path = root / "GLD.xlsx"
@@ -835,4 +896,7 @@ def load_macro_directory(path: str | Path) -> PointInTimeStore:
         )
     elif cot_zip.exists():
         store.add_many(load_cot_zip(cot_zip))
+    gvz_path = root / "GVZ.csv"
+    if gvz_path.exists():
+        store.add_many(load_gvz_csv(gvz_path.read_text(encoding="utf-8")))
     return store

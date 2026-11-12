@@ -42,6 +42,13 @@ class TechnicalEngine:
         self.atr_ceiling = float(self.config.get("atr_ceiling", 0.0200))
         self.max_spread_points = float(self.config.get("max_spread_points", 100.0))
         self.structure_buffer = float(self.config.get("structure_break_buffer", 0.0))
+        session = as_dict(self.config.get("session_filter"))
+        self.session_enabled = bool(session.get("enabled", False))
+        self.session_start_minutes = _hhmm_minutes(str(session.get("start_utc", "00:00")))
+        self.session_end_minutes = _hhmm_minutes(str(session.get("end_utc", "23:59")))
+        self.session_weekdays = {
+            int(day) for day in as_list(session.get("weekdays", [0, 1, 2, 3, 4]))
+        }
 
     def evaluate(
         self,
@@ -169,11 +176,13 @@ class TechnicalEngine:
         atr_filter = self.atr_floor <= atr_pct <= self.atr_ceiling
         spread = execution[-1].spread_points
         spread_filter = spread <= self.max_spread_points
+        session_filter = self._session_ok(decision_time)
         entry_triggers = {
             "h4_context": h4_context,
             "m15_trigger": m15_trigger,
             "atr_filter": atr_filter,
             "spread_filter": spread_filter,
+            "session_filter": session_filter,
             "no_news_blackout": not news_blackout,
         }
         components = {
@@ -204,7 +213,8 @@ class TechnicalEngine:
             f"trend={trend_signal:+.0f} momentum={momentum_signal:+.2f} "
             f"structure={structure_signal:+.0f} volatility={volatility_signal:+.0f}",
             f"h4_context={h4_context} m15_trigger={m15_trigger} "
-            f"atr_filter={atr_filter} spread_filter={spread_filter}",
+            f"atr_filter={atr_filter} spread_filter={spread_filter} "
+            f"session_filter={session_filter}",
         ]
         return TechnicalView(
             as_of_utc=decision_time,
@@ -218,7 +228,25 @@ class TechnicalEngine:
             context_bars_used=len(context),
         )
 
+    def _session_ok(self, decision_time: datetime) -> bool:
+        if not self.session_enabled:
+            return True
+        if decision_time.weekday() not in self.session_weekdays:
+            return False
+        minute = decision_time.hour * 60 + decision_time.minute
+        if self.session_start_minutes <= self.session_end_minutes:
+            return self.session_start_minutes <= minute < self.session_end_minutes
+        return minute >= self.session_start_minutes or minute < self.session_end_minutes
+
 
 def _timeframe_minutes(timeframe: str) -> int:
     mapping = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
     return mapping.get(timeframe.upper(), 15)
+
+
+def _hhmm_minutes(value: str) -> int:
+    try:
+        hour, minute = value.split(":", 1)
+        return int(hour) * 60 + int(minute)
+    except (ValueError, AttributeError) as exc:
+        raise TechnicalConfigError(f"invalid session time: {value!r}") from exc

@@ -223,25 +223,44 @@ The M2 code reads these from the manifest rather than hardcoding them:
 
 - fundamental weights, signs, transforms, z-score lookback, minimum observations, stale limits,
 - technical indicator periods, component weights, RSI entry band, ATR floor/ceiling, spread limit,
-  structure buffer, declared entry triggers,
+  structure buffer, session-filter hours/weekdays, declared entry triggers,
 - fusion weights, entry-requires-both, conflict policy, score minimums, entry threshold,
 - exit thresholds, ATR stop/trail multiples, profit-take R, time-stop bars, precedence priorities,
-- sizing contract size, lot step, minimum lot, maximum notional ratio,
+- sizing contract size, lot step, minimum lot, maximum notional ratio, and minimum-lot risk cap,
 - backtest point value, commission, and slippage,
 - market execution/context timeframes.
 
-## Cash-equivalent/no-leverage caveat
+## Account profiles and leverage
 
-XAUUSD is normally quoted with a standard lot of 100 oz. On a $1,000 cash-equivalent account, the
-minimum `0.01` lot is about 1 oz, which is roughly $2,000 notional at $2,000 gold. That exceeds
-equity and violates the no-leverage cap. The strategy therefore returns `NO_TRADE` with an explicit
-sizing reason instead of silently taking leverage. Use a larger demo equity for strategy evidence,
-or obtain a broker contract whose minimum notional fits the account.
+The base manifest uses a leveraged account model with a **5:1 bot notional cap**. The standard
+`config/profiles/standard_1k.yaml` profile keeps the 0.25% base risk and adds a **1.25% minimum-lot
+risk guard**. The guard allows the broker minimum lot only when the stop risk implied by that lot is
+at or below 1.25% of equity. The strategy always reports the risk implied by the final lot-rounded
+volume, not the pre-rounding risk budget.
+
+XAUUSD is normally quoted with a standard lot of 100 oz. On the current FBS-Demo contract, the
+minimum `0.01` lot is 1 oz. At ~$4,114 gold and the latest MT5 ATR, that lot risks roughly
+$9.37-$10.66, or about **0.94%-1.07% of $1,000**. That fits the 1.25% guard, so the $1,000 account
+can trade 0.01 lot without changing the 0.25% base risk for larger accounts.
+
+The same 0.01 lot on a **$100** account risks roughly **9.4%-10.7%** of equity. The standard profile
+therefore returns `NO_TRADE` with an explicit min-lot-risk reason. `config/profiles/micro_100.yaml`
+is an explicit **high-risk override** that raises the per-trade cap to 11%, the daily halt to 12%,
+the max drawdown to 25%, and the bot notional cap to 50:1 so the minimum lot can be held. It is
+marked `high_risk_override: true`, `promotion_eligible: false`, prints a warning, and shows a red
+banner on the dashboard. One normal stop is a double-digit account loss. The risk-preserving route
+for a $100 account is a micro-lot broker (0.001 lot or a 1 oz-per-lot contract), not this override.
 
 ## M2 limitations
 
-- ALFRED vintage replay, iShares IAU, CBOE GVZ, manual WGC/IMF XLSX ingestion, and raw source
-  snapshot hashing are not yet wired into the strategy loader.
-- The session filter is not yet implemented; news blackout is an explicit input flag.
-- Walk-forward/OOS splitting, Sharpe/Sortino, and stress tests are M3 work.
+- ALFRED `realtime_start` vintages and CBOE GVZ are wired into the loader; automated ALFRED
+  download/replay scheduling, iShares IAU (deferred to v2), manual WGC/IMF XLSX strategy ingestion
+  (still HUMAN_JUDGMENT, weight 0, not consumed by the overseer), and raw source snapshot hashing
+  are not yet wired.
+- The session-filter mechanism is implemented but disabled in the manifest until the owner confirms
+  the session hours; news blackout is an explicit input flag.
+- Walk-forward/OOS splitting and baseline controls (buy-and-hold, simple trend, random entry) are
+  M3 work. Sharpe/Sortino/exposure reporting and gap/spread/missing/stale stress tests exist.
+- The dashboard is a read-only static HTML renderer of a saved JSON report. It does not connect to
+  MT5, place orders, or change scope. A live FastAPI dashboard is M3 work.
 - The demo backtest is a synthetic fixture, not evidence of real-world profitability.

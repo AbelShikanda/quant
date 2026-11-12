@@ -8,6 +8,7 @@ costs.  It is intentionally small; walk-forward and OOS splitting are M3 work.
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -38,6 +39,11 @@ class BacktestResult:
     decisions: list[StrategyDecision]
     metrics: dict[str, float | int]
     data_quality: dict[str, Any] = field(default_factory=dict)
+    account_profile: str = "base"
+    account_profile_description: str = ""
+    high_risk_override: bool = False
+    promotion_eligible: bool = True
+    risk_summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -53,6 +59,11 @@ class BacktestResult:
             "decision_count": len(self.decisions),
             "decisions": [decision.to_dict() for decision in self.decisions],
             "data_quality": self.data_quality,
+            "account_profile": self.account_profile,
+            "account_profile_description": self.account_profile_description,
+            "high_risk_override": self.high_risk_override,
+            "promotion_eligible": self.promotion_eligible,
+            "risk_summary": self.risk_summary,
         }
 
 
@@ -226,7 +237,33 @@ class BacktestRunner:
             equity += trade.pnl
             position = None
 
-        metrics = _metrics(self.initial_equity, equity, trades, decisions)
+        metrics = _metrics(
+            self.initial_equity,
+            equity,
+            trades,
+            decisions,
+            contract_size_oz=self.contract_size_oz,
+        )
+        market = as_dict(self.manifest.get("market"))
+        risk_config = as_dict(self.manifest.get("risk"))
+        sizing_config = as_dict(as_dict(self.manifest.get("strategy")).get("sizing"))
+        risk_summary = {
+            "account_model": market.get("account_model"),
+            "leverage_cap": float(risk_config.get("leverage_cap", 1.0)),
+            "max_notional_exposure_ratio": float(
+                market.get("max_notional_exposure_ratio", 1.0)
+            ),
+            "per_trade_equity_pct": float(risk_config.get("per_trade_equity_pct", 0.25)),
+            "min_lot_risk_cap_pct": float(
+                sizing_config.get("min_lot_risk_cap_pct", 0.0)
+            ),
+            "daily_loss_halt_pct": float(risk_config.get("daily_loss_halt_pct", 1.5)),
+            "max_drawdown_flatten_pct": float(
+                risk_config.get("max_drawdown_flatten_pct", 8.0)
+            ),
+            "contract_size_oz": float(sizing_config.get("contract_size_oz", 100.0)),
+            "min_lot": float(sizing_config.get("min_lot", 0.01)),
+        }
         return BacktestResult(
             run_id=run_id,
             scope_id=str(self.manifest.get("scope_id", "unknown")),
@@ -244,6 +281,17 @@ class BacktestRunner:
                 "macro_series": len(self.macro_store.series_ids()),
                 "entry_atr_last": entry_atr,
             },
+            account_profile=str(self.manifest.get("active_account_profile", "base")),
+            account_profile_description=str(
+                self.manifest.get("account_profile_description", "")
+            ),
+            high_risk_override=bool(
+                self.manifest.get("profile_high_risk_override", False)
+            ),
+            promotion_eligible=bool(
+                self.manifest.get("profile_promotion_eligible", True)
+            ),
+            risk_summary=risk_summary,
         )
 
     def _protective_exit(self, position: PositionState, bar: Bar) -> tuple[float | None, str | None]:
@@ -301,6 +349,8 @@ def _metrics(
     final_equity: float,
     trades: list[Trade],
     decisions: list[StrategyDecision],
+    *,
+    contract_size_oz: float = 100.0,
 ) -> dict[str, float | int | None]:
     wins = [trade.pnl for trade in trades if trade.pnl > 0]
     losses = [trade.pnl for trade in trades if trade.pnl < 0]
@@ -309,11 +359,47 @@ def _metrics(
     peak = initial_equity
     max_drawdown = 0.0
     equity = initial_equity
+    entry_notionals: list[float] = []
+    daily_pnl: dict[Any, float] = {}
     for trade in trades:
+        entry_notionals.append(trade.entry_price * trade.volume * contract_size_oz)
+        exit_time = trade.exit_time_utc or trade.entry_time_utc
+        day = exit_time.date()
+        daily_pnl[day] = daily_pnl.get(day, 0.0) + trade.pnl
         equity += trade.pnl
         peak = max(peak, equity)
         if peak > 0:
             max_drawdown = max(max_drawdown, (peak - equity) / peak * 100.0)
+
+    daily_returns: list[float] = []
+    equity_for_returns = initial_equity
+    for day in sorted(daily_pnl):
+        pnl = daily_pnl[day]
+        if equity_for_returns > 0:
+            daily_returns.append(pnl / equity_for_returns)
+        equity_for_returns += pnl
+
+    sharpe_daily = None
+    sortino_daily = None
+    # Do not annualize a handful of trades into a misleading Sharpe/Sortino.
+    if len(daily_returns) >= 20:
+        mean_return = sum(daily_returns) / len(daily_returns)
+        variance = sum((value - mean_return) ** 2 for value in daily_returns) / (
+            len(daily_returns) - 1
+        )
+        std_dev = math.sqrt(variance)
+        if std_dev > 0:
+            sharpe_daily = mean_return / std_dev * math.sqrt(252.0)
+        downside = [value for value in daily_returns if value < 0]
+        if downside:
+            downside_dev = math.sqrt(sum(value * value for value in downside) / len(downside))
+            if downside_dev > 0:
+                sortino_daily = mean_return / downside_dev * math.sqrt(252.0)
+
+    average_entry_notional = (
+        sum(entry_notionals) / len(entry_notionals) if entry_notionals else 0.0
+    )
+    max_entry_notional = max(entry_notionals) if entry_notionals else 0.0
     return {
         "total_return_pct": (final_equity / initial_equity - 1.0) * 100.0 if initial_equity else 0.0,
         "max_drawdown_pct": max_drawdown,
@@ -325,6 +411,17 @@ def _metrics(
         "gross_loss": gross_loss,
         "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else None,
         "expectancy": (sum(trade.pnl for trade in trades) / len(trades)) if trades else 0.0,
+        "sharpe_daily_annualized": sharpe_daily,
+        "sortino_daily_annualized": sortino_daily,
+        "daily_return_count": len(daily_returns),
+        "average_entry_notional": average_entry_notional,
+        "max_entry_notional": max_entry_notional,
+        "average_entry_exposure_pct": (
+            average_entry_notional / initial_equity * 100.0 if initial_equity else 0.0
+        ),
+        "max_entry_exposure_pct": (
+            max_entry_notional / initial_equity * 100.0 if initial_equity else 0.0
+        ),
         "decision_count": len(decisions),
         "entry_decisions": sum(1 for decision in decisions if decision.decision_type == "ENTER_LONG"),
         "exit_decisions": sum(1 for decision in decisions if decision.decision_type == "EXIT"),

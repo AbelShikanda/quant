@@ -1,0 +1,24 @@
+profile_id: micro_100
+description: >-
+  Experimental $100 account on the standard 100 oz/lot XAUUSD contract. The
+  broker minimum is 0.01 lot (1 oz), so the 1.5xATR stop risks about 10.66% of a
+  $100 account. This profile raises the per-trade cap to 11%, the daily halt to
+  12%, the max drawdown to 25%, and the bot notional cap to 50:1 so the minimum
+  lot can be held. HIGH RISK: one normal stop is a double-digit account loss.
+  Not promotion-eligible. Use a micro-lot broker for a risk-preserving $100
+  account.
+high_risk_override: true
+promotion_eligible: false
+overrides:
+  market:
+    account_model: leveraged
+    max_notional_exposure_ratio: 50.0
+  risk:
+    per_trade_equity_pct: 11.0
+    daily_loss_halt_pct: 12.0
+    max_drawdown_flatten_pct: 25.0
+    leverage_cap: 50.0
+  strategy:
+    sizing:
+      max_notional_exposure_ratio: 50.0
+      min_lot_risk_cap_pct: 11.0

@@ -1,0 +1,21 @@
+profile_id: standard_1k
+description: >-
+  Standard FBS-Demo XAUUSD contract (100 oz/lot, 0.01 lot minimum). 5:1 bot
+  notional cap, 0.25% base risk, and a 1.25% minimum-lot risk guard. The $1,000
+  account can hold 0.01 lot at current ATR while keeping the actual stop risk
+  near 1.07%. Promotion-eligible only after the normal demo gates.
+high_risk_override: false
+promotion_eligible: true
+overrides:
+  market:
+    account_model: leveraged
+    max_notional_exposure_ratio: 5.0
+  risk:
+    per_trade_equity_pct: 0.25
+    daily_loss_halt_pct: 1.5
+    max_drawdown_flatten_pct: 8.0
+    leverage_cap: 5.0
+  strategy:
+    sizing:
+      max_notional_exposure_ratio: 5.0
+      min_lot_risk_cap_pct: 1.25

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from goldbot.contracts import Bar
@@ -29,6 +29,7 @@ def test_technical_view_on_synthetic_bars() -> None:
         "m15_trigger",
         "atr_filter",
         "spread_filter",
+        "session_filter",
         "no_news_blackout",
     }
     assert {"ema_fast", "ema_slow", "ema_trend", "rsi", "atr", "atr_pct"} <= set(view.indicators)
@@ -74,3 +75,20 @@ def test_spread_filter_reads_manifest_parameter() -> None:
     changed["strategy"]["technical"]["max_spread_points"] = 1.0
     view = TechnicalEngine(changed).evaluate(BarSeries(m15), BarSeries(h4), decision_time)
     assert view.entry_triggers["spread_filter"] is False
+
+
+def test_session_filter_blocks_weekend_and_allows_weekday_session() -> None:
+    manifest = load_manifest(GOLD)
+    m15 = make_synthetic_bars(count=1600)
+    h4 = aggregate_bars(m15, "H4", 4)
+    changed = copy.deepcopy(manifest)
+    changed["strategy"]["technical"]["session_filter"]["enabled"] = True
+    engine = TechnicalEngine(changed)
+    saturday = datetime(2026, 1, 17, 12, 0, tzinfo=timezone.utc)
+    friday = datetime(2026, 1, 16, 12, 0, tzinfo=timezone.utc)
+    weekend_view = engine.evaluate(BarSeries(m15), BarSeries(h4), saturday)
+    weekday_view = engine.evaluate(BarSeries(m15), BarSeries(h4), friday)
+    assert weekend_view.is_valid
+    assert weekend_view.entry_triggers["session_filter"] is False
+    assert weekday_view.is_valid
+    assert weekday_view.entry_triggers["session_filter"] is True

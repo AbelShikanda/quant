@@ -20,20 +20,39 @@ Build a **quantamental XAUUSD** trading bot in which:
 - No options, no futures, no equities, no crypto, no cross-instrument relative value.
 - Execution timeframe: **M15**.
 - Higher-timeframe context: **H4**.
-- Account model: **cash-equivalent, no leverage**.
-- Notional exposure must never exceed equity.
+- Account model: **leveraged, with a 5:1 bot notional cap** for the standard profile (approved by
+  the human owner on 2026-11-12).
+- Notional exposure must never exceed 5x equity for the standard profile.
 - Demo first. **No real-money trading** until every promotion gate in §8 is met.
 
 ## 3. Risk limits (non-negotiable defaults)
 
-| Limit | Default |
+| Limit | Standard profile default |
 |---|---|
 | Risk per trade | **0.25% of equity** |
+| Minimum-lot risk guard | **1.25% of equity** |
+| Bot leverage cap | **5:1** |
 | Daily loss halt | **1.5% of equity** |
 | Maximum drawdown flatten/halt | **8% of equity** |
 
 Risk exits are **veto-immune**. No fundamental, technical, dashboard, or operator action may
 override an emergency/risk exit.
+
+### 3a. High-risk `micro_100` profile (explicit owner override)
+
+The human owner also requested that a $100 account be able to hold the broker minimum lot. The
+`config/profiles/micro_100.yaml` profile is a separate, warning-labeled override:
+
+| Limit | `micro_100` override |
+|---|---|
+| Risk per trade | **11% of equity** |
+| Daily loss halt | **12% of equity** |
+| Maximum drawdown flatten/halt | **25% of equity** |
+| Bot leverage cap | **50:1** |
+
+This profile is **not promotion-eligible**, does not alter the standard limits above, and is not a
+substitute for a micro-lot broker. One normal stop is a double-digit account loss. The standard
+profile remains the only profile eligible for the §8 promotion gates.
 
 ## 4. Architecture boundaries
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .backtest import BacktestRunner
+from .dashboard import build_dashboard, build_dashboard_from_file
 from .data import (
     BarSeries,
     MT5DataFeed,
@@ -20,7 +21,23 @@ from .data import (
     make_synthetic_macro_store,
 )
 from .manifest import load_manifest, manifest_hash
+from .profiles import load_manifest_with_profile
 from .validator import validate_manifest, write_json_report, write_markdown_report
+
+
+def _load_manifest_for_run(args: argparse.Namespace) -> dict:
+    manifest = load_manifest_with_profile(
+        args.manifest,
+        getattr(args, "account_profile", None),
+    )
+    if manifest.get("profile_high_risk_override"):
+        print(
+            "WARNING: account profile "
+            f"{manifest.get('active_account_profile')} is a HIGH RISK OVERRIDE; "
+            "it is not promotion-eligible.",
+            file=sys.stderr,
+        )
+    return manifest
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -97,7 +114,7 @@ def _cmd_hash_manifest(args: argparse.Namespace) -> int:
 
 
 def _build_run_inputs(args: argparse.Namespace):
-    manifest = load_manifest(args.manifest)
+    manifest = _load_manifest_for_run(args)
     macro_store = None
     if args.macro_dir:
         macro_store = load_macro_directory(args.macro_dir)
@@ -152,14 +169,18 @@ def _cmd_run(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001 - CLI must report, not hide, the failure
         print(f"run failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
+    result_payload = result.to_dict()
     if args.report:
         path = Path(args.report)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps(result.to_dict(), indent=2, ensure_ascii=False, default=str) + "\n",
+            json.dumps(result_payload, indent=2, ensure_ascii=False, default=str) + "\n",
             encoding="utf-8",
         )
         print(f"wrote run report: {path}")
+    if args.dashboard:
+        dashboard_path = build_dashboard(result_payload, args.dashboard)
+        print(f"wrote read-only dashboard: {dashboard_path}")
     if args.json:
         print(
             json.dumps(
@@ -167,6 +188,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     "run_id": result.run_id,
                     "scope_id": result.scope_id,
                     "manifest_hash": result.manifest_hash,
+                    "account_profile": result.account_profile,
+                    "high_risk_override": result.high_risk_override,
+                    "promotion_eligible": result.promotion_eligible,
                     "metrics": result.metrics,
                     "trades": [trade.to_dict() for trade in result.trades],
                 },
@@ -179,6 +203,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
     print(f"scope: {result.scope_id}")
     print(f"run_id: {result.run_id}")
     print(f"manifest_hash: {result.manifest_hash}")
+    print(
+        f"account_profile: {result.account_profile} "
+        f"(high_risk={result.high_risk_override}, "
+        f"promotion_eligible={result.promotion_eligible})"
+    )
     print(f"bars: M15={len(execution)} H4={len(context)}")
     print(f"initial_equity: {result.initial_equity:.2f}")
     print(f"final_equity: {result.final_equity:.2f}")
@@ -200,7 +229,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 def _cmd_demo_param(args: argparse.Namespace) -> int:
     try:
-        manifest = load_manifest(args.manifest)
+        manifest = _load_manifest_for_run(args)
         start = datetime(2026, 1, 5, tzinfo=timezone.utc)
         m15 = make_synthetic_bars(
             start_utc=start,
@@ -235,6 +264,7 @@ def _cmd_demo_param(args: argparse.Namespace) -> int:
 
     baseline_entries = int(baseline.metrics["entry_decisions"])
     changed_entries = int(changed.metrics["entry_decisions"])
+    print(f"account_profile: {manifest.get('active_account_profile', 'base')}")
     print(f"baseline entry_threshold={manifest['strategy']['fusion']['entry_threshold']}")
     print(f"  entries={baseline_entries} trades={baseline.metrics['trade_count']} "
           f"final_equity={baseline.final_equity:.2f}")
@@ -249,6 +279,20 @@ def _cmd_demo_param(args: argparse.Namespace) -> int:
         )
         return 1
     print("manifest parameter change altered behavior without a code edit")
+    return 0
+
+
+def _cmd_dashboard(args: argparse.Namespace) -> int:
+    try:
+        output = build_dashboard_from_file(
+            args.report,
+            args.output,
+            max_decisions=args.max_decisions,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI must report, not hide, the failure
+        print(f"dashboard failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print(f"wrote read-only dashboard: {output}")
     return 0
 
 
@@ -278,6 +322,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser("run", help="run the headless strategy core")
     run.add_argument("--manifest", required=True, help="path to scope YAML")
+    run.add_argument(
+        "--account-profile",
+        help="explicit account-profile YAML overlay, e.g. config/profiles/micro_100.yaml",
+    )
     run.add_argument("--source", choices=["synthetic", "mt5"], default="synthetic")
     run.add_argument("--macro-dir", help="local macro CSV/XLSX directory; synthetic if omitted")
     run.add_argument("--bars", type=int, default=1200, help="M15 bars to load")
@@ -287,6 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--drift", type=float, default=0.12, help="synthetic M15 drift per bar")
     run.add_argument("--amplitude", type=float, default=6.0, help="synthetic M15 wave amplitude")
     run.add_argument("--report", help="write full JSON run report")
+    run.add_argument("--dashboard", help="write a read-only HTML dashboard from the run")
     run.add_argument("--show-decisions", type=int, default=10)
     run.add_argument("--json", action="store_true", help="print summary JSON")
     run.set_defaults(func=_cmd_run)
@@ -296,6 +345,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="show that a manifest parameter change alters behavior without a code edit",
     )
     demo.add_argument("--manifest", required=True, help="path to scope YAML")
+    demo.add_argument(
+        "--account-profile",
+        help="explicit account-profile YAML overlay, e.g. config/profiles/micro_100.yaml",
+    )
     demo.add_argument("--bars", type=int, default=1200)
     demo.add_argument("--macro-days", type=int, default=520)
     demo.add_argument("--equity", type=float, default=10000.0)
@@ -303,6 +356,15 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--amplitude", type=float, default=6.0)
     demo.add_argument("--changed-threshold", type=float, default=0.99)
     demo.set_defaults(func=_cmd_demo_param)
+
+    dash = subparsers.add_parser(
+        "dashboard",
+        help="render a saved JSON run report to a read-only HTML dashboard",
+    )
+    dash.add_argument("--report", required=True, help="path to a saved run report JSON")
+    dash.add_argument("--output", required=True, help="path for the generated HTML file")
+    dash.add_argument("--max-decisions", type=int, default=200)
+    dash.set_defaults(func=_cmd_dashboard)
     return parser
 
 

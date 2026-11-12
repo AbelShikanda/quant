@@ -23,9 +23,10 @@ dashboard/wizard**. Do not skip ahead.
 ### Scope manifest
 
 - [x] Create `config/scope.gold.v1.yaml`.
-- [x] Declare instrument `XAUUSD`, spot-gold CFD, long-only, demo, cash-equivalent, no leverage.
+- [x] Declare instrument `XAUUSD`, spot-gold CFD, long-only, demo, leveraged with a 5:1 bot notional cap.
 - [x] Declare execution bar `M15` and context bar `H4`.
-- [x] Declare risk defaults: 0.25% per trade, 1.5% daily halt, 8% max drawdown.
+- [x] Declare standard risk defaults: 0.25% per trade, 1.25% minimum-lot risk guard, 5:1 leverage cap, 1.5% daily halt, 8% max drawdown.
+- [x] Add explicit account profiles: `standard_1k` (safe) and `micro_100` (high-risk override, not promotion-eligible).
 - [x] Declare source registry with legal/ToS risk, point-in-time behavior, coverage, cadence, gaps.
 - [x] Declare fundamental inputs and weights:
   - [x] Real yield 10y: 0.55
@@ -93,13 +94,14 @@ dashboard/wizard**. Do not skip ahead.
 - [~] Spread, tick value, lot step, stop level, and freeze level capture. Spread and lot step are
   modeled; tick value/stop/freeze levels are not yet captured from the symbol.
 - [x] FRED CSV ingestion for real yields, broad USD, breakevens.
-- [ ] ALFRED vintage ingestion for point-in-time macro revisions. The loader accepts an explicit
-  knowledge-time column, but vintage replay is not yet automated.
+- [~] ALFRED vintage ingestion for point-in-time macro revisions. The loader accepts
+  `realtime_start`, and `load_macro_directory` prefers `ALFRED_*.csv` over the latest-revision FRED
+  file. Automated download/replay scheduling remains M3.
 - [x] U.S. Treasury real-yield curve ingestion.
 - [x] CFTC COT ZIP ingestion and gold contract mapping.
 - [x] SPDR GLD holdings ingestion.
 - [ ] iShares IAU holdings ingestion.
-- [ ] CBOE GVZ ingestion as a risk/vol diagnostic.
+- [x] CBOE GVZ ingestion as a risk/vol diagnostic (`GVZ.csv` in the macro directory).
 - [~] Manual WGC/IMF XLSX ingestion with mechanical checks and HUMAN_JUDGMENT label. The validator
   checks the manual-file policy; the strategy loader does not yet ingest the XLSX.
 - [~] Staleness, gap, and revision logging for every source. Staleness is reported in views; full
@@ -126,8 +128,9 @@ dashboard/wizard**. Do not skip ahead.
 - [~] H4 context: trend, range, volatility regime. Trend context is implemented; range/volatility
   regime classification is not.
 - [x] Entry timing rules for long-only.
-- [~] No-trade filters: spread, session, news, volatility extremes. Spread, ATR, and explicit news
-  blackout are implemented; session filtering is not.
+- [x] No-trade filters: spread, session, news, volatility extremes. Spread, ATR, explicit news
+  blackout, and the session-filter mechanism are implemented. The session filter is disabled in the
+  manifest until the owner confirms the session hours.
 - [x] Unit tests with synthetic bars.
 
 ### Fusion and overseer
@@ -167,14 +170,19 @@ dashboard/wizard**. Do not skip ahead.
   this; automated ALFRED vintage replay remains M3.
 - [ ] Walk-forward and out-of-sample splits.
 - [ ] Baseline comparison: buy-and-hold, simple trend, random-entry control.
-- [~] Report drawdown, Sharpe, Sortino, hit rate, payoff, exposure, trade count. Drawdown, hit rate,
-  payoff, expectancy, and trade count exist; Sharpe, Sortino, and exposure are not yet reported.
-- [ ] Stress tests: gap risk, spread spikes, missing data, stale macro prints.
+- [x] Report drawdown, Sharpe, Sortino, hit rate, payoff, exposure, trade count. The report includes
+  daily annualized Sharpe/Sortino (null until at least 20 trading days), entry notional, and
+  entry-exposure percentages.
+- [x] Stress tests: gap risk, spread spikes, missing data, stale macro prints.
+- [x] Standard $1,000 profile sizing: 5:1 cap, 0.25% base risk, 1.25% minimum-lot risk guard.
+- [x] High-risk $100 micro profile sizing: 50:1 cap, 11% per-trade cap, 12% daily halt, 25% max drawdown, not promotion-eligible.
+- [x] Read-only static HTML dashboard renderer for saved run reports; no MT5 connection and no scope/trade mutation.
 
 ### M2 gate decision
 
-- [~] M2 core is runnable and tested (`52 passed`), but execution is not promoted. Remaining M2/M3
-  items above are explicit; do not treat the synthetic fixture as profitability evidence.
+- [~] M2 core is runnable and tested (`66 passed`), but execution is not promoted. Remaining M2/M3
+  items above are explicit; do not treat the synthetic fixture as profitability evidence. The
+  `micro_100` profile is a high-risk override, not a promotion candidate.
 
 ---
 
@@ -212,10 +220,12 @@ dashboard/wizard**. Do not skip ahead.
 
 ### Dashboard
 
-- [ ] FastAPI read-only backend.
-- [ ] Lightweight HTML/JS frontend.
-- [ ] Never connects to MT5 directly.
-- [ ] Displays state, decisions, risk, staleness, and alerts.
+- [x] Static read-only HTML renderer for saved run reports (M2).
+- [x] Never connects to MT5 directly.
+- [x] Displays profile, risk limits, decisions, trades, data quality, and alerts.
+- [x] Cannot change scope or trade.
+- [ ] FastAPI read-only backend (M3).
+- [ ] Lightweight live HTML/JS frontend (M3).
 - [ ] Can request human action, but cannot change scope or trade.
 - [ ] Auth and local-only binding.
 
@@ -233,7 +243,8 @@ dashboard/wizard**. Do not skip ahead.
 - [ ] Run 3 months demo.
 - [ ] Collect 100+ trades.
 - [ ] Positive out-of-sample after costs.
-- [ ] Drawdown within 0.25% / 1.5% / 8% limits.
+- [ ] Drawdown within the standard 0.25% per-trade / 1.5% daily / 8% max-drawdown limits. The
+  `micro_100` high-risk profile (11% / 12% / 25%) is not promotion-eligible.
 - [ ] Kill-switch drill passed.
 - [ ] Reconnect drill passed.
 - [ ] Incident review log complete.
@@ -245,11 +256,13 @@ dashboard/wizard**. Do not skip ahead.
 ## Open questions / human decisions
 
 - [ ] Provide a valid FBS-Demo account or another demo account for MT5 runtime checks.
-- [ ] Confirm a demo equity that can hold the XAUUSD minimum lot under the no-leverage cap. The
-  current $1,000 account cannot hold 0.01 lot (~1 oz) at ~$2,000 gold; the strategy correctly
-  returns NO_TRADE.
+- [x] Confirm a demo equity/account model that can hold the XAUUSD minimum lot. The standard
+  $1,000 profile now uses 5:1 leverage and a 1.25% minimum-lot risk guard.
+- [ ] Confirm whether the `micro_100` high-risk override is acceptable for demo use. It allows
+  0.01 lot on $100 at ~9.4%-10.7% stop risk, is not promotion-eligible, and is not a substitute for
+  a micro-lot broker.
 - [ ] Confirm broker contract specifications: XAUUSD lot step, tick value, stop level, swap.
 - [ ] Confirm data-source ToS risk acceptance for each source.
 - [ ] Confirm whether GVZ and breakevens remain diagnostic-only in v2.
-- [ ] Confirm dashboard authentication approach.
+- [ ] Confirm dashboard authentication approach for the M3 live backend.
 - [ ] Confirm repo hosting and CI provider.

@@ -318,10 +318,12 @@ def check_manifest_integrity(ctx: CheckContext, spec: dict[str, Any]) -> CheckOu
             errors.append("market.execution_bar must be M15")
         if market.get("context_bar") != "H4":
             errors.append("market.context_bar must be H4")
-        if market.get("account_model") != "cash_equivalent_no_leverage":
-            errors.append("market.account_model must be cash_equivalent_no_leverage")
-        if float(market.get("max_notional_exposure_ratio", 999)) > 1.0:
-            errors.append("market.max_notional_exposure_ratio must be <= 1.0")
+        if market.get("account_model") not in {"cash_equivalent_no_leverage", "leveraged"}:
+            errors.append(
+                "market.account_model must be cash_equivalent_no_leverage or leveraged"
+            )
+        if float(market.get("max_notional_exposure_ratio", 999)) > 5.0:
+            errors.append("market.max_notional_exposure_ratio must be <= 5.0")
         if market.get("chart_assumption") != "none":
             errors.append("market.chart_assumption must be none")
         if market.get("real_money_allowed") is not False:
@@ -369,21 +371,29 @@ def check_market_scope(ctx: CheckContext, spec: dict[str, Any]) -> CheckOutcome:
         "direction": "long_only",
         "execution_bar": "M15",
         "context_bar": "H4",
-        "account_model": "cash_equivalent_no_leverage",
         "chart_assumption": "none",
     }
     for key, value in expected.items():
         if market.get(key) != value:
             errors.append(f"{key}={market.get(key)!r}, expected {value!r}")
-    if float(market.get("max_notional_exposure_ratio", 999)) > 1.0:
-        errors.append("max_notional_exposure_ratio must be <= 1.0")
+    if market.get("account_model") not in {"cash_equivalent_no_leverage", "leveraged"}:
+        errors.append(
+            "account_model="
+            f"{market.get('account_model')!r}, expected cash_equivalent_no_leverage or leveraged"
+        )
+    if float(market.get("max_notional_exposure_ratio", 999)) > 5.0:
+        errors.append("max_notional_exposure_ratio must be <= 5.0")
     if market.get("broker_time_calibration_required") is not True:
         errors.append("broker_time_calibration_required must be true")
     if market.get("real_money_allowed") is not False:
         errors.append("real_money_allowed must be false")
     if errors:
         return CheckOutcome(FAIL, _join_errors(errors), {"market": market})
-    return CheckOutcome(PASS, "market scope is XAUUSD spot-gold, long-only, M15/H4, cash-equivalent", {"market": market})
+    return CheckOutcome(
+        PASS,
+        "market scope is XAUUSD spot-gold, long-only, M15/H4, with a valid account model and notional cap",
+        {"market": market},
+    )
 
 
 def check_risk_limits(ctx: CheckContext, spec: dict[str, Any]) -> CheckOutcome:
@@ -401,11 +411,22 @@ def check_risk_limits(ctx: CheckContext, spec: dict[str, Any]) -> CheckOutcome:
         errors.append("daily_halt_action must be flatten_and_halt")
     if risk.get("max_drawdown_action") != "flatten_and_halt":
         errors.append("max_drawdown_action must be flatten_and_halt")
-    if float(risk.get("leverage_cap", 999)) > 1.0:
-        errors.append("leverage_cap must be <= 1.0")
+    if float(risk.get("leverage_cap", 999)) > 5.0:
+        errors.append("leverage_cap must be <= 5.0")
+    sizing = as_dict(as_dict(ctx.manifest.get("strategy")).get("sizing"))
+    min_lot_cap = sizing.get("min_lot_risk_cap_pct")
+    if min_lot_cap is not None and float(min_lot_cap) > 1.25:
+        errors.append("strategy.sizing.min_lot_risk_cap_pct must be <= 1.25")
+    sizing_notional = sizing.get("max_notional_exposure_ratio")
+    if sizing_notional is not None and float(sizing_notional) > 5.0:
+        errors.append("strategy.sizing.max_notional_exposure_ratio must be <= 5.0")
     if errors:
-        return CheckOutcome(FAIL, _join_errors(errors), {"risk": risk})
-    return CheckOutcome(PASS, "risk limits and veto immunity are valid", {"risk": risk})
+        return CheckOutcome(FAIL, _join_errors(errors), {"risk": risk, "sizing": sizing})
+    return CheckOutcome(
+        PASS,
+        "risk limits, leverage cap, and minimum-lot risk cap are valid",
+        {"risk": risk, "sizing": sizing},
+    )
 
 
 def check_source_registry(ctx: CheckContext, spec: dict[str, Any]) -> CheckOutcome:
