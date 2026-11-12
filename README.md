@@ -4,8 +4,10 @@ A quantamental XAUUSD research and trading project. **Gold macro fundamentals de
 consider; M15 technicals define when to act.** The overseer is a rule-based referee, not a trade
 originator. Exits are first-class, especially SELL decisions.
 
-This repository currently implements **M1: the scope manifest and headless validator**. Strategy,
-execution, dashboard, and wizard layers are intentionally not built yet.
+This repository currently implements **M1: the scope manifest and headless validator** and the
+**M2 strategy core**: point-in-time macro data, fundamental/technical scoring, fusion, the rule-based
+overseer, first-class exits, and an event-driven M15/H4 backtest harness. Order execution, the
+dashboard, and the wizard are intentionally not built yet.
 
 ## Read this first
 
@@ -37,6 +39,56 @@ python -m venv .venv
 
 The `MetaTrader5` package is Windows-only and requires a running, logged-in MT5 terminal for runtime
 preflight checks.
+
+## Run the M2 strategy core
+
+The strategy core is headless and reads every behavior from `config/scope.gold.v1.yaml`. The default
+`run` source is a deterministic synthetic fixture so the core can be exercised without network data:
+
+```powershell
+.\.venv\Scripts\python.exe -m goldbot.cli run `
+  --manifest config/scope.gold.v1.yaml `
+  --source synthetic `
+  --bars 1200 `
+  --equity 10000 `
+  --report reports/m2.run.json
+```
+
+To pull OHLCV from the running MT5 terminal instead:
+
+```powershell
+.\.venv\Scripts\python.exe -m goldbot.cli run `
+  --manifest config/scope.gold.v1.yaml `
+  --source mt5 `
+  --bars 1200 `
+  --context-bars 500 `
+  --equity 10000 `
+  --report reports/m2.mt5.run.json
+```
+
+Use `--macro-dir data/macro` to load local `DFII10.csv`, `DTWEXBGS.csv`, `T10YIE.csv`, `GLD.xlsx`,
+and `COT.csv`/`COT.zip` files instead of the synthetic macro fixture. Missing files are reported as
+missing/stale; they are not forward-filled.
+
+The manifest-parameter demonstration changes only `strategy.fusion.entry_threshold` and shows the
+entry count change without a code edit:
+
+```powershell
+.\.venv\Scripts\python.exe -m goldbot.cli demo-param `
+  --manifest config/scope.gold.v1.yaml
+```
+
+The fixed interfaces are documented in `docs/contracts.md`. Verification commands and observed
+results are recorded in `docs/m2-evidence.md`.
+
+### Cash-equivalent/no-leverage caveat
+
+A standard XAUUSD lot is normally 100 oz. On a $1,000 cash-equivalent account, the minimum `0.01`
+lot is about 1 oz, roughly $2,000 notional at $2,000 gold. That exceeds equity and violates the
+no-leverage cap. The strategy returns `NO_TRADE` with an explicit sizing reason instead of silently
+taking leverage. Use a larger demo equity for strategy evidence, or obtain a broker contract whose
+minimum notional fits the account. The current `$1,000` demo account is therefore expected to show
+no entries; this is an honest constraint, not a bug.
 
 ## Validate the gold scope
 
@@ -78,6 +130,11 @@ precedence. It must not crash.
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
 ```
+
+The M2 suite covers point-in-time vintage isolation, SQLite/DuckDB round-trips, fundamental sign
+conventions and missing/stale handling, technical H4 forming-bar exclusion, fusion conflicts,
+overseer vetoes, exit precedence for both disagreement cases, the no-leverage sizing cap, and the
+manifest-parameter-change demonstration.
 
 ## Manifest hash and calibration artifact
 
@@ -171,9 +228,46 @@ fundamental inputs, missing central-bank policy, wrong timeframes/indicators, ba
 overseer rules, missing calibration artifact, incomplete exit precedence, wrong storage model,
 missing schema/baseline files, invalid dashboard/runtime boundaries, and missing promotion gates.
 
-## Non-goals for M1
+## Current M2 status
 
-- No strategy logic.
+**M2 strategy core: runnable headless implementation, not yet promoted to execution.**
+
+Implemented:
+
+- fixed contracts in `goldbot/contracts.py` and `docs/contracts.md`,
+- point-in-time macro store with in-memory and SQLite/WAL persistence,
+- DuckDB OHLCV store with Parquet export,
+- headless MT5 M15/H4 puller with broker-time offset support,
+- synthetic OHLCV and macro fixtures for tests and demos,
+- fundamental engine with manifest weights, signs, transforms, z-scores, staleness, and
+  zero-weight diagnostics,
+- technical engine with EMA stack, RSI, ATR, structure, H4 context, spread/ATR filters, and
+  forming-bar exclusion,
+- fusion with both-layer requirement, conflict policy, score minimums, and manifest-declared
+  triggers,
+- rule-based overseer that cannot originate entries and applies veto-immune risk exits,
+- exit engine with the full priority ladder,
+- event-driven M15/H4 backtest harness with next-bar-open discretionary fills, stop-first
+  protective exits, spread/slippage/commission modeling, and JSON decision records.
+
+Evidence:
+
+- `python -m pytest -q` → **52 passed**.
+- Synthetic run: 1,200 M15 bars, 75 H4 bars, 10,000 equity → 4 entries/trades, final equity
+  10,067.90 on the current fixture.
+- Manifest-parameter demo: baseline `entry_threshold=0.20` → 4 entries; changed
+  `entry_threshold=0.99` → 0 entries, without a code edit.
+- Point-in-time test: a revised `DFII10` print is invisible before its knowledge time.
+- Exit-precedence tests: fundamentals-only deterioration selects `thesis_invalidated` (80);
+  technicals-only deterioration selects `technical_or_profit_trail` (50); risk selects
+  `emergency_risk` (100) and is veto-immune.
+
+Not yet implemented in M2: ALFRED vintage replay, iShares IAU, CBOE GVZ, manual WGC/IMF XLSX
+ingestion, raw source snapshot hashing, session filters, walk-forward/OOS splits, and
+Sharpe/Sortino/stress reporting. These remain M3 work.
+
+## Non-goals for M1/M2
+
 - No order execution.
 - No dashboard.
 - No wizard.

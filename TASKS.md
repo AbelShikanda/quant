@@ -87,74 +87,94 @@ dashboard/wizard**. Do not skip ahead.
 
 ### Data ingestion
 
-- [ ] MT5 OHLCV ingestion for M15 and H4, independent of open charts.
-- [ ] Broker-time to UTC calibration and DST handling.
-- [ ] Spread, tick value, lot step, stop level, and freeze level capture.
-- [ ] FRED CSV ingestion for real yields, broad USD, breakevens.
-- [ ] ALFRED vintage ingestion for point-in-time macro revisions.
-- [ ] U.S. Treasury real-yield curve ingestion.
-- [ ] CFTC COT ZIP ingestion and gold contract mapping.
-- [ ] SPDR GLD / iShares IAU holdings ingestion.
+- [x] MT5 OHLCV ingestion for M15 and H4, independent of open charts.
+- [~] Broker-time to UTC calibration and DST handling. Offset support exists; DST/automatic
+  calibration is not yet wired into the runner.
+- [~] Spread, tick value, lot step, stop level, and freeze level capture. Spread and lot step are
+  modeled; tick value/stop/freeze levels are not yet captured from the symbol.
+- [x] FRED CSV ingestion for real yields, broad USD, breakevens.
+- [ ] ALFRED vintage ingestion for point-in-time macro revisions. The loader accepts an explicit
+  knowledge-time column, but vintage replay is not yet automated.
+- [x] U.S. Treasury real-yield curve ingestion.
+- [x] CFTC COT ZIP ingestion and gold contract mapping.
+- [x] SPDR GLD holdings ingestion.
+- [ ] iShares IAU holdings ingestion.
 - [ ] CBOE GVZ ingestion as a risk/vol diagnostic.
-- [ ] Manual WGC/IMF XLSX ingestion with mechanical checks and HUMAN_JUDGMENT label.
-- [ ] Staleness, gap, and revision logging for every source.
+- [~] Manual WGC/IMF XLSX ingestion with mechanical checks and HUMAN_JUDGMENT label. The validator
+  checks the manual-file policy; the strategy loader does not yet ingest the XLSX.
+- [~] Staleness, gap, and revision logging for every source. Staleness is reported in views; full
+  per-source gap/revision logging is not yet persisted.
 - [ ] Raw snapshot retention with source hash and retrieval time.
 
 ### Fundamental engine
 
-- [ ] Build real-yield signal with level and change components.
-- [ ] Build broad-USD signal.
-- [ ] Build ETF-flow signal.
-- [ ] Build COT-positioning signal.
-- [ ] Build central-bank diagnostic signal with weight 0.
-- [ ] Build breakeven diagnostic signal with weight 0.
-- [ ] Implement missing-data policy: no silent forward-fill.
-- [ ] Implement point-in-time replay for backtests.
-- [ ] Unit tests for sign conventions and edge cases.
+- [x] Build real-yield signal with level and change components.
+- [x] Build broad-USD signal.
+- [x] Build ETF-flow signal.
+- [x] Build COT-positioning signal.
+- [x] Build central-bank diagnostic signal with weight 0.
+- [x] Build breakeven diagnostic signal with weight 0.
+- [x] Implement missing-data policy: no silent forward-fill.
+- [x] Implement point-in-time replay for backtests.
+- [x] Unit tests for sign conventions and edge cases.
 
 ### Technical engine
 
-- [ ] M15 structure: swing highs/lows, break-of-structure, failed break.
-- [ ] M15 trend and momentum: EMA stack, RSI, ATR.
-- [ ] H4 context: trend, range, volatility regime.
-- [ ] Entry timing rules for long-only.
-- [ ] No-trade filters: spread, session, news, volatility extremes.
-- [ ] Unit tests with synthetic bars.
+- [~] M15 structure: swing highs/lows, break-of-structure, failed break. Implemented as rolling
+  prior-high/low structure break; pivot confirmation and failed-break state are not yet modeled.
+- [x] M15 trend and momentum: EMA stack, RSI, ATR.
+- [~] H4 context: trend, range, volatility regime. Trend context is implemented; range/volatility
+  regime classification is not.
+- [x] Entry timing rules for long-only.
+- [~] No-trade filters: spread, session, news, volatility extremes. Spread, ATR, and explicit news
+  blackout are implemented; session filtering is not.
+- [x] Unit tests with synthetic bars.
 
 ### Fusion and overseer
 
-- [ ] Fundamental score → directional bias and confidence.
-- [ ] Technical score → timing trigger and invalidation level.
-- [ ] Fusion requires both layers for entry.
-- [ ] Overseer arbitrates conflicts; never originates entries.
-- [ ] Overseer calibration artifact with manifest hash and fit window.
-- [ ] Risk exits veto-immune.
-- [ ] Decision record includes every input, weight, version, and veto.
-- [ ] Unit tests for arbitration and veto behavior.
+- [x] Fundamental score → directional bias and confidence.
+- [x] Technical score → timing trigger and invalidation level.
+- [x] Fusion requires both layers for entry.
+- [x] Overseer arbitrates conflicts; never originates entries.
+- [~] Overseer calibration artifact with manifest hash and fit window. Manifest hash is recorded;
+  no parameters are fitted yet.
+- [x] Risk exits veto-immune.
+- [x] Decision record includes every input, weight, version, and veto.
+- [x] Unit tests for arbitration and veto behavior.
 
 ### Exits
 
-- [ ] Emergency/risk exit priority 100.
-- [ ] Hard/trailing stop priority 90.
-- [ ] Thesis invalidated priority 80.
-- [ ] Thesis weakened priority 70.
-- [ ] Time stop priority 60.
-- [ ] Technical/profit trail priority 50.
-- [ ] Profit take priority 40.
-- [ ] Advisory exit priority 30.
-- [ ] SELL decisions are explicit, logged, and reviewed as first-class outcomes.
-- [ ] Unit tests for precedence conflicts and partial fills.
+- [x] Emergency/risk exit priority 100.
+- [x] Hard/trailing stop priority 90.
+- [x] Thesis invalidated priority 80.
+- [x] Thesis weakened priority 70.
+- [x] Time stop priority 60.
+- [x] Technical/profit trail priority 50.
+- [x] Profit take priority 40.
+- [x] Advisory exit priority 30.
+- [~] SELL decisions are explicit, logged, and reviewed as first-class outcomes. Exits are explicit
+  in decisions/trades; a dedicated SELL-review report is not yet built.
+- [~] Unit tests for precedence conflicts and partial fills. Precedence tests exist; partial-fill
+  tests do not.
 
 ### Backtest and validation
 
-- [ ] Event-driven backtester using M15 execution and H4 context.
-- [ ] Costs: spread, commission, slippage, swap if applicable.
-- [ ] Stop-first intrabar assumption.
-- [ ] No lookahead; vintage macro data only.
+- [x] Event-driven backtester using M15 execution and H4 context.
+- [x] Costs: spread, commission, slippage, swap if applicable. Spread, commission, and slippage are
+  modeled; swap is not.
+- [x] Stop-first intrabar assumption.
+- [~] No lookahead; vintage macro data only. The point-in-time store and closed-bar windows enforce
+  this; automated ALFRED vintage replay remains M3.
 - [ ] Walk-forward and out-of-sample splits.
 - [ ] Baseline comparison: buy-and-hold, simple trend, random-entry control.
-- [ ] Report drawdown, Sharpe, Sortino, hit rate, payoff, exposure, trade count.
+- [~] Report drawdown, Sharpe, Sortino, hit rate, payoff, exposure, trade count. Drawdown, hit rate,
+  payoff, expectancy, and trade count exist; Sharpe, Sortino, and exposure are not yet reported.
 - [ ] Stress tests: gap risk, spread spikes, missing data, stale macro prints.
+
+### M2 gate decision
+
+- [~] M2 core is runnable and tested (`52 passed`), but execution is not promoted. Remaining M2/M3
+  items above are explicit; do not treat the synthetic fixture as profitability evidence.
 
 ---
 
@@ -225,6 +245,9 @@ dashboard/wizard**. Do not skip ahead.
 ## Open questions / human decisions
 
 - [ ] Provide a valid FBS-Demo account or another demo account for MT5 runtime checks.
+- [ ] Confirm a demo equity that can hold the XAUUSD minimum lot under the no-leverage cap. The
+  current $1,000 account cannot hold 0.01 lot (~1 oz) at ~$2,000 gold; the strategy correctly
+  returns NO_TRADE.
 - [ ] Confirm broker contract specifications: XAUUSD lot step, tick value, stop level, swap.
 - [ ] Confirm data-source ToS risk acceptance for each source.
 - [ ] Confirm whether GVZ and breakevens remain diagnostic-only in v2.

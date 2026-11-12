@@ -1,9 +1,9 @@
 {
   "artifact_version": 1,
   "scope_id": "gold.v1",
-  "manifest_hash": "551e043df27374cf66efbdf89d289f3f62388dcf9749f5642eca5f0d4e322f55",
+  "manifest_hash": "86f15cdd58e2b6593fb3f9f680e4433221fa88cfc122baef0ba81ae07209c1fd",
   "status": "not_fitted",
   "fit_window": null,
   "metrics": {},
-  "notes": "M1 design-time artifact. No overseer parameters are fitted yet. The strategy core and calibration pipeline are not built. This file records the manifest hash so the validator can detect scope drift."
+  "notes": "M2 design-time artifact. The manifest hash was refreshed after adding the strategy section. No overseer parameters are fitted yet; the calibration pipeline remains M3 work. This file records the manifest hash so the validator can detect scope drift."
 }

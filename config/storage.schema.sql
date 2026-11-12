@@ -138,6 +138,33 @@ CREATE TABLE IF NOT EXISTS incidents (
     resolved_by TEXT
 );
 
+CREATE TABLE IF NOT EXISTS macro_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    series_id TEXT NOT NULL,
+    knowledge_time_utc TEXT NOT NULL,
+    observation_date TEXT,
+    value REAL NOT NULL,
+    source_id TEXT NOT NULL,
+    vintage TEXT
+);
+
+CREATE TABLE IF NOT EXISTS strategy_runs (
+    run_id TEXT PRIMARY KEY,
+    scope_id TEXT NOT NULL,
+    manifest_hash TEXT NOT NULL,
+    started_at_utc TEXT NOT NULL,
+    finished_at_utc TEXT,
+    summary_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS strategy_decisions (
+    decision_id TEXT PRIMARY KEY,
+    as_of_utc TEXT NOT NULL,
+    decision_type TEXT NOT NULL,
+    side TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_snapshots_captured_at ON snapshots(captured_at_utc);
 CREATE INDEX IF NOT EXISTS idx_decisions_decided_at ON decisions(decided_at_utc);
 CREATE INDEX IF NOT EXISTS idx_orders_submitted_at ON orders(submitted_at_utc);
@@ -145,3 +172,5 @@ CREATE INDEX IF NOT EXISTS idx_fills_filled_at ON fills(filled_at_utc);
 CREATE INDEX IF NOT EXISTS idx_positions_open_time ON positions(open_time_utc);
 CREATE INDEX IF NOT EXISTS idx_logs_logged_at ON logs(logged_at_utc);
 CREATE INDEX IF NOT EXISTS idx_incidents_opened_at ON incidents(opened_at_utc);
+CREATE INDEX IF NOT EXISTS idx_macro_series_time ON macro_observations(series_id, knowledge_time_utc);
+CREATE INDEX IF NOT EXISTS idx_strategy_decisions_as_of ON strategy_decisions(as_of_utc);

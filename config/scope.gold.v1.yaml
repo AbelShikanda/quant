@@ -405,6 +405,7 @@ fundamental_inputs:
     role: primary
     source_ids: [fred_dfii10, alfred_dfii10, treasury_real_yield]
     field: DFII10
+    series_id: DFII10
     transform: level_change_20d
     sign: negative
     pit_policy: Use ALFRED vintage in backtests; live uses latest release.
@@ -417,6 +418,7 @@ fundamental_inputs:
     role: primary
     source_ids: [fred_dtwexbgs, alfred_dtwexbgs]
     field: DTWEXBGS
+    series_id: DTWEXBGS
     transform: level_change_20d
     sign: negative
     pit_policy: Use ALFRED vintage in backtests; live uses latest release.
@@ -429,6 +431,7 @@ fundamental_inputs:
     role: confirming
     source_ids: [spdr_gld_archive]
     field: Tonnes of Gold
+    series_id: GLD_TONNES
     transform: change_5d
     sign: positive
     pit_policy: Use publication date as knowledge time.
@@ -441,6 +444,7 @@ fundamental_inputs:
     role: confirming
     source_ids: [cftc_cot]
     field: Noncommercial Positions-Long (All) - Noncommercial Positions-Short (All)
+    series_id: COT_GOLD_NET
     transform: net_position_percentile_156w
     sign: contextual
     pit_policy: Use Friday release as knowledge time.
@@ -454,6 +458,7 @@ fundamental_inputs:
     validation_class: HUMAN_JUDGMENT
     source_ids: [wgc_central_bank_manual]
     field: official_gold_holdings_tonnes
+    series_id: WGC_CB_TONNES
     transform: level_change_3m
     sign: contextual
     consumed_by_overseer: false
@@ -469,6 +474,7 @@ fundamental_inputs:
     role: diagnostic
     source_ids: [fred_t10yie, alfred_t10yie]
     field: T10YIE
+    series_id: T10YIE
     transform: level_change_20d
     sign: contextual
     consumed_by_overseer: false
@@ -518,6 +524,65 @@ fusion:
   technical_score_range: [-1, 1]
   conflict_policy: no_trade
   overseer_can_originate: false
+
+strategy:
+  fundamental:
+    zscore_lookback_days: 252
+    min_observations: 60
+    zscore_clip: 1.0
+    stale_after_days:
+      real_yield_10y: 5
+      broad_usd: 5
+      gold_etf_flows: 5
+      cot_managed_money: 14
+      central_bank_gold: 90
+      breakeven_10y: 5
+    transforms:
+      real_yield_10y: {kind: change, days: 20}
+      broad_usd: {kind: change, days: 20}
+      gold_etf_flows: {kind: change, days: 5}
+      cot_managed_money:
+        kind: percentile
+        lookback_observations: 156
+        mode: contrarian_extremes
+        extreme_threshold: 0.80
+      central_bank_gold: {kind: change, days: 90}
+      breakeven_10y: {kind: change, days: 20}
+  technical:
+    component_weights:
+      trend: 0.35
+      momentum: 0.25
+      structure: 0.25
+      volatility: 0.15
+    rsi_entry_min: 50
+    rsi_entry_max: 70
+    atr_floor: 0.0005
+    atr_ceiling: 0.0200
+    max_spread_points: 100
+    structure_break_buffer: 0.0
+  fusion:
+    entry_threshold: 0.20
+    fundamental_min: 0.05
+    technical_min: 0.05
+  exits:
+    thesis_invalidated_score: -0.35
+    thesis_weakened_score: -0.15
+    technical_exit_score: -0.25
+    time_stop_bars: 96
+    profit_take_r: 2.0
+    stop_atr_multiple: 1.5
+    trailing_atr_multiple: 2.0
+    trailing_start_r: 1.0
+  sizing:
+    initial_equity: 10000.0
+    contract_size_oz: 100.0
+    min_lot: 0.01
+    lot_step: 0.01
+    max_notional_exposure_ratio: 1.0
+  backtest:
+    point_value: 0.01
+    commission_per_lot: 0.0
+    slippage_points: 0.0
 
 overseer:
   type: rule_based_referee

@@ -1,13 +1,24 @@
-"""Command-line entry point for the goldbot validator."""
+﻿"""Command-line entry point for the goldbot validator and M2 strategy core."""
 
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
+from .backtest import BacktestRunner
+from .data import (
+    BarSeries,
+    MT5DataFeed,
+    aggregate_bars,
+    load_macro_directory,
+    make_synthetic_bars,
+    make_synthetic_macro_store,
+)
 from .manifest import load_manifest, manifest_hash
 from .validator import validate_manifest, write_json_report, write_markdown_report
 
@@ -85,6 +96,162 @@ def _cmd_hash_manifest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_run_inputs(args: argparse.Namespace):
+    manifest = load_manifest(args.manifest)
+    macro_store = None
+    if args.macro_dir:
+        macro_store = load_macro_directory(args.macro_dir)
+    if args.source == "synthetic":
+        start = datetime(2026, 1, 5, tzinfo=timezone.utc)
+        m15 = make_synthetic_bars(
+            start_utc=start,
+            count=args.bars,
+            drift_per_bar=args.drift,
+            amplitude=args.amplitude,
+        )
+        h4 = aggregate_bars(m15, "H4", 4)
+        as_of = m15[-1].time_utc + timedelta(minutes=15)
+        if macro_store is None:
+            macro_store = make_synthetic_macro_store(as_of_utc=as_of, days=args.macro_days)
+        return manifest, BarSeries(m15, "M15"), BarSeries(h4, "H4"), macro_store
+
+    feed = MT5DataFeed(symbol=str(manifest.get("market", {}).get("symbol", "XAUUSD")))
+    try:
+        account = feed.connect()
+        m15_bars, h4_bars = feed.fetch_both(
+            execution_count=args.bars,
+            context_count=args.context_bars,
+        )
+        if not m15_bars:
+            raise RuntimeError("MT5 returned no M15 bars")
+        as_of = m15_bars[-1].time_utc + timedelta(minutes=15)
+        if macro_store is None:
+            macro_store = make_synthetic_macro_store(as_of_utc=as_of, days=args.macro_days)
+        if account:
+            print(
+                f"mt5 account: {account.get('login')} {account.get('server')} "
+                f"equity={account.get('equity')}",
+                file=sys.stderr,
+            )
+        return manifest, BarSeries(m15_bars, "M15"), BarSeries(h4_bars, "H4"), macro_store
+    finally:
+        feed.close()
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    try:
+        manifest, execution, context, macro_store = _build_run_inputs(args)
+        runner = BacktestRunner(
+            manifest=manifest,
+            execution_bars=execution,
+            context_bars=context,
+            macro_store=macro_store,
+            initial_equity=args.equity,
+        )
+        result = runner.run()
+    except Exception as exc:  # noqa: BLE001 - CLI must report, not hide, the failure
+        print(f"run failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    if args.report:
+        path = Path(args.report)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(result.to_dict(), indent=2, ensure_ascii=False, default=str) + "\n",
+            encoding="utf-8",
+        )
+        print(f"wrote run report: {path}")
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "run_id": result.run_id,
+                    "scope_id": result.scope_id,
+                    "manifest_hash": result.manifest_hash,
+                    "metrics": result.metrics,
+                    "trades": [trade.to_dict() for trade in result.trades],
+                },
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+        return 0
+    print(f"scope: {result.scope_id}")
+    print(f"run_id: {result.run_id}")
+    print(f"manifest_hash: {result.manifest_hash}")
+    print(f"bars: M15={len(execution)} H4={len(context)}")
+    print(f"initial_equity: {result.initial_equity:.2f}")
+    print(f"final_equity: {result.final_equity:.2f}")
+    print(f"metrics: {json.dumps(result.metrics, ensure_ascii=False)}")
+    for trade in result.trades:
+        print(
+            f"trade {trade.trade_id}: {trade.side} {trade.volume:.2f} "
+            f"{trade.entry_price:.2f} -> {trade.exit_price:.2f} "
+            f"pnl={trade.pnl:.2f} reason={trade.exit_reason}"
+        )
+    if args.show_decisions > 0:
+        for decision in result.decisions[-args.show_decisions :]:
+            print(
+                f"decision {decision.as_of_utc.isoformat()} {decision.decision_type} "
+                f"score={decision.combined_score:+.3f} reasons={decision.reasons}"
+            )
+    return 0
+
+
+def _cmd_demo_param(args: argparse.Namespace) -> int:
+    try:
+        manifest = load_manifest(args.manifest)
+        start = datetime(2026, 1, 5, tzinfo=timezone.utc)
+        m15 = make_synthetic_bars(
+            start_utc=start,
+            count=args.bars,
+            drift_per_bar=args.drift,
+            amplitude=args.amplitude,
+        )
+        h4 = aggregate_bars(m15, "H4", 4)
+        execution = BarSeries(m15, "M15")
+        context = BarSeries(h4, "H4")
+        as_of = m15[-1].time_utc + timedelta(minutes=15)
+        macro_store = make_synthetic_macro_store(as_of_utc=as_of, days=args.macro_days)
+        baseline = BacktestRunner(
+            manifest=manifest,
+            execution_bars=execution,
+            context_bars=context,
+            macro_store=macro_store,
+            initial_equity=args.equity,
+        ).run()
+        changed_manifest = copy.deepcopy(manifest)
+        changed_manifest.setdefault("strategy", {}).setdefault("fusion", {})["entry_threshold"] = args.changed_threshold
+        changed = BacktestRunner(
+            manifest=changed_manifest,
+            execution_bars=execution,
+            context_bars=context,
+            macro_store=macro_store,
+            initial_equity=args.equity,
+        ).run()
+    except Exception as exc:  # noqa: BLE001
+        print(f"demo failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    baseline_entries = int(baseline.metrics["entry_decisions"])
+    changed_entries = int(changed.metrics["entry_decisions"])
+    print(f"baseline entry_threshold={manifest['strategy']['fusion']['entry_threshold']}")
+    print(f"  entries={baseline_entries} trades={baseline.metrics['trade_count']} "
+          f"final_equity={baseline.final_equity:.2f}")
+    print(f"changed entry_threshold={args.changed_threshold}")
+    print(f"  entries={changed_entries} trades={changed.metrics['trade_count']} "
+          f"final_equity={changed.final_equity:.2f}")
+    if baseline_entries == changed_entries:
+        print(
+            "WARNING: the manifest change did not alter entry behavior on this fixture; "
+            "choose a different parameter or fixture.",
+            file=sys.stderr,
+        )
+        return 1
+    print("manifest parameter change altered behavior without a code edit")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="goldbot", description="Gold quantamental bot tools")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -108,6 +275,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="update/create a calibration JSON artifact with the current manifest hash",
     )
     hash_cmd.set_defaults(func=_cmd_hash_manifest)
+
+    run = subparsers.add_parser("run", help="run the headless strategy core")
+    run.add_argument("--manifest", required=True, help="path to scope YAML")
+    run.add_argument("--source", choices=["synthetic", "mt5"], default="synthetic")
+    run.add_argument("--macro-dir", help="local macro CSV/XLSX directory; synthetic if omitted")
+    run.add_argument("--bars", type=int, default=1200, help="M15 bars to load")
+    run.add_argument("--context-bars", type=int, default=500, help="H4 bars to load from MT5")
+    run.add_argument("--macro-days", type=int, default=520, help="synthetic macro days")
+    run.add_argument("--equity", type=float, default=10000.0, help="backtest starting equity")
+    run.add_argument("--drift", type=float, default=0.12, help="synthetic M15 drift per bar")
+    run.add_argument("--amplitude", type=float, default=6.0, help="synthetic M15 wave amplitude")
+    run.add_argument("--report", help="write full JSON run report")
+    run.add_argument("--show-decisions", type=int, default=10)
+    run.add_argument("--json", action="store_true", help="print summary JSON")
+    run.set_defaults(func=_cmd_run)
+
+    demo = subparsers.add_parser(
+        "demo-param",
+        help="show that a manifest parameter change alters behavior without a code edit",
+    )
+    demo.add_argument("--manifest", required=True, help="path to scope YAML")
+    demo.add_argument("--bars", type=int, default=1200)
+    demo.add_argument("--macro-days", type=int, default=520)
+    demo.add_argument("--equity", type=float, default=10000.0)
+    demo.add_argument("--drift", type=float, default=0.12)
+    demo.add_argument("--amplitude", type=float, default=6.0)
+    demo.add_argument("--changed-threshold", type=float, default=0.99)
+    demo.set_defaults(func=_cmd_demo_param)
     return parser
 
 
