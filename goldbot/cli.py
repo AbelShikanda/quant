@@ -21,6 +21,7 @@ from .data import (
     make_synthetic_macro_store,
 )
 from .ledger import Ledger
+from .live_dashboard import serve_live_dashboard
 from .manifest import load_manifest, manifest_hash
 from .paper import PaperRuntime, replay_times_from_bars
 from .profiles import load_manifest_with_profile
@@ -474,6 +475,22 @@ def _cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dashboard_live(args: argparse.Namespace) -> int:
+    try:
+        serve_live_dashboard(
+            ledger_path=args.ledger,
+            host=args.host,
+            port=args.port,
+            refresh_seconds=args.refresh_seconds,
+            max_rows=args.max_rows,
+            open_browser=args.open,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI must report, not hide, the failure
+        print(f"dashboard-live failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="goldbot", description="Gold quantamental bot tools")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -617,6 +634,30 @@ def build_parser() -> argparse.ArgumentParser:
     dash.add_argument("--output", required=True, help="path for the generated HTML file")
     dash.add_argument("--max-decisions", type=int, default=200)
     dash.set_defaults(func=_cmd_dashboard)
+
+    live = subparsers.add_parser(
+        "dashboard-live",
+        help="serve a read-only live dashboard from a SQLite ledger on loopback",
+    )
+    live.add_argument(
+        "--ledger",
+        default=str(Path("reports/goldbot.ledger.sqlite")),
+        help="path to the SQLite ledger (read-only; never created by the dashboard)",
+    )
+    live.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="loopback host to bind (127.0.0.1 or localhost)",
+    )
+    live.add_argument("--port", type=int, default=8000)
+    live.add_argument("--refresh-seconds", type=float, default=2.0)
+    live.add_argument("--max-rows", type=int, default=25)
+    live.add_argument(
+        "--open",
+        action="store_true",
+        help="open the dashboard URL in the default browser after startup",
+    )
+    live.set_defaults(func=_cmd_dashboard_live)
     return parser
 
 

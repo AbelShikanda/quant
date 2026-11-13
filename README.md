@@ -8,8 +8,9 @@ This repository currently implements **M1: the scope manifest and headless valid
 **M2 strategy core** (point-in-time macro data, fundamental/technical scoring, fusion, the rule-based
 overseer, first-class exits, an event-driven M15/H4 backtest harness, and walk-forward/baseline
 controls), and the first **M3 slice**: a persistent SQLite ledger, a paper/dry-run execution replay,
-and a read-only dashboard that shows paper orders. **No broker order has been sent.** The MT5 order
-router, live dashboard backend, and wizard are still M3 work.
+a static read-only report dashboard, and a local read-only live dashboard server that reads the
+ledger. **No broker order has been sent.** The MT5 order router, demo execution path, and wizard are
+still M3 work.
 
 ## Read this first
 
@@ -174,9 +175,35 @@ The page shows the profile, risk banner, account model, leverage and notional ca
 equity curve, trades, paper orders when present, explained decisions, and data-quality counts. Paper
 reports carry a `paper_replay` mode badge and a no-broker-order notice.
 
-This static renderer is an owner-requested, read-only exception to the `notes.txt` "no dashboard"
-non-goal. It has no server, no MT5 connection, and no write path. The live dashboard backend and
-wizard remain M3 work.
+### Live read-only dashboard (local server)
+
+The `dashboard-live` command serves a live view of a SQLite ledger on loopback only. It is built with
+the Python standard library, so it adds no web-framework dependency to the trading process.
+
+```powershell
+.\.venv\Scripts\python.exe -m goldbot.cli dashboard-live `
+  --ledger reports/live.paper.mt5.1000.ledger.sqlite `
+  --port 8000 `
+  --refresh-seconds 2 `
+  --open
+```
+
+Open <http://127.0.0.1:8000/>. The page auto-refreshes, shows the latest run, profile, equity, risk
+state, open position, orders, fills, positions, decisions, logs, and incidents, and exposes the same
+state at `/api/state` plus `/health`.
+
+- The server binds to `127.0.0.1` or `localhost` only. It refuses any other host.
+- It opens the ledger with SQLite `mode=ro` and `PRAGMA query_only=ON` on every request. It never
+  creates, migrates, or writes the ledger.
+- It does not import MetaTrader5, connect to the broker, place orders, or change scope.
+- A missing ledger is a waiting state, not an error and not a new file.
+- A completed paper replay is labeled as finished rather than stale. An active run becomes stale when
+  its last ledger activity is older than the refresh threshold.
+- It is a local-only view. Do not expose it to a network; authentication and any remote-access design
+  are separate M3 work.
+
+This static renderer and the local live server are an owner-requested, read-only exception to the
+`notes.txt` "no dashboard" non-goal. The wizard remains M3 work.
 
 ### Paper execution and the SQLite ledger (M3)
 
@@ -264,7 +291,9 @@ The M2 suite covers point-in-time vintage isolation, SQLite/DuckDB round-trips, 
 conventions and missing/stale handling, technical H4 forming-bar exclusion, fusion conflicts,
 overseer vetoes, exit precedence for both disagreement cases, standard-1k sizing, the $100
 standard-profile refusal, micro-100 minimum-lot sizing, profile-overlay immutability, the read-only
-dashboard, and the manifest-parameter-change demonstration.
+dashboard, and the manifest-parameter-change demonstration. The M3 suite adds ledger single-writer
+and idempotency coverage, paper replay, and the live dashboard's read-only SQLite access, missing-
+ledger handling, active-versus-finished stale semantics, loopback-only binding, and HTTP endpoints.
 
 ## Manifest hash and calibration artifact
 
@@ -388,11 +417,12 @@ Implemented:
 - baseline controls (buy-and-hold, simple EMA trend, random-entry distribution) computed over the
   same test windows,
 - explicit account-profile overlays for the standard $1,000 account and the high-risk $100 account,
-- read-only static HTML dashboard renderer for saved run reports.
+- read-only static HTML dashboard renderer for saved run reports,
+- local read-only live dashboard server that reads a SQLite ledger on loopback only.
 
 Evidence:
 
-- `python -m pytest -q` → **80 passed**.
+- `python -m pytest -q` → **89 passed**.
 - Synthetic run: 1,200 M15 bars, 75 H4 bars, 10,000 equity → 4 entries/trades, final equity
   10,186.72 on the current fixture.
 - Standard $1,000 MT5 run: 1 trade, `LONG 0.01 4114.26 -> 4116.94`, PnL `2.67`, trailing-stop
@@ -429,6 +459,12 @@ Evidence:
   percentages. Sharpe/Sortino stay `null` until at least 20 trading days have closed trades.
 - Paper/ledger tests: WAL mode, single-writer lock, idempotent decision/order/fill writes, paper
   replay persistence, protective-exit stop-first behavior, and the `paper` CLI report/dashboard.
+- Live dashboard tests: read-only SQLite access, no ledger byte changes, missing-ledger handling,
+  active-versus-finished stale semantics, loopback-only host rejection, and HTTP `/`, `/api/state`,
+  and `/health` responses.
+- Live dashboard evidence: the local server returned HTTP 200 for the page and state against the MT5
+  standard paper ledger, reporting `mode=paper_replay`, `profile=standard_1k`, equity `1002.55`, and
+  a finished run.
 - MT5 paper replay, standard $1,000 profile: 1,600 decision times, 1 paper trade, 2 paper
   orders/fills, final equity 1,002.55 (+0.26%). The trade exited on a trailing stop. This is
   execution/logging evidence, not a profitability result.
@@ -446,12 +482,13 @@ hours.
 
 Not yet implemented in M3: the MT5 broker order router, pre-trade margin/spread/symbol/session
 checks, post-trade reconciliation against MT5 deals, the kill switch, reconnect drills, broker-side
-daily-loss/max-drawdown flatten/halt enforcement, the live dashboard backend, and the wizard. The
-current `paper` command is a replay, not a live loop and not a broker fill.
+daily-loss/max-drawdown flatten/halt enforcement, a live demo execution loop, and the wizard. The
+current `paper` command is a replay, not a live loop and not a broker fill. The live dashboard is a
+read-only ledger viewer, not an execution component.
 
 ## Non-goals for the current M1/M2/M3-paper slice
 
 - No broker order execution. The `paper` command is a replay; it does not call `order_send`.
-- No live dashboard backend. The dashboard is a static renderer of a saved report.
+- No live demo execution loop. The live dashboard is a read-only ledger viewer.
 - No wizard.
 - No real-money trading.

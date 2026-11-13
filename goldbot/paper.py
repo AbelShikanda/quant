@@ -253,6 +253,21 @@ class PaperRuntime:
             finished_at_utc=self.finished_at_utc,
             summary={
                 "mode": "paper_replay",
+                "scope_id": self.scope_id,
+                "manifest_hash": self.manifest_hash,
+                "symbol": self.symbol,
+                "execution_bar": self.execution_bar,
+                "context_bar": self.context_bar,
+                "account_profile": str(self.manifest.get("active_account_profile", "base")),
+                "account_profile_description": str(
+                    self.manifest.get("account_profile_description", "")
+                ),
+                "high_risk_override": bool(
+                    self.manifest.get("profile_high_risk_override", False)
+                ),
+                "promotion_eligible": bool(
+                    self.manifest.get("profile_promotion_eligible", True)
+                ),
                 "initial_equity": self.initial_equity,
                 "final_equity": self.equity,
                 "trade_count": len(self.trades),

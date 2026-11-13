@@ -223,6 +223,30 @@ must be reproducible from the persisted views, manifest hash, and source version
 - The strategy process owns the SQLite write connection. No other component may write concurrently.
   Dashboard/report readers use separate read-only connections.
 
+## Live read-only dashboard contract (M3 slice)
+
+`goldbot/live_dashboard.py` serves a local, read-only view of a ledger. It is deliberately built on
+the Python standard library, not a web framework, so the trading process does not gain a web-server
+dependency.
+
+- The server binds only to `127.0.0.1` or `localhost`. Any other host is rejected. It is not an
+  authentication layer and must not be exposed to a network.
+- Each request opens a fresh SQLite connection with `mode=ro` and `PRAGMA query_only=ON`. The
+  dashboard never creates, migrates, or writes the ledger.
+- The dashboard does not import MetaTrader5, connect to the broker, place orders, or mutate scope.
+  The bot process remains the only writer and the only MT5 client.
+- `/` renders a self-contained HTML page with a meta-refresh interval. `/api/state` returns the same
+  JSON-safe state, and `/health` returns a minimal liveness payload. There is no JavaScript and no
+  external asset dependency.
+- A missing ledger is reported as a waiting state; it is not created. Missing tables are reported as
+  warnings rather than crashing the server.
+- A run with `finished_at_utc` is shown as completed and is not marked stale. An active run is marked
+  stale when the newest persisted activity is older than the configured threshold.
+- The dashboard may display a completed `paper_replay` or an active `demo_live` run. It never infers
+  a profile from equity; it displays the profile recorded in the run summary.
+- The static report renderer and the live ledger server are read-only exceptions to the `notes.txt`
+  "no dashboard" non-goal.
+
 ## Paper execution contract (M3 slice)
 
 `goldbot/paper.py` is a deterministic **paper/dry-run replay**, not a broker router.
@@ -305,8 +329,9 @@ checks, not strategy results; they do not model spread, commission, or slippage.
 - Walk-forward/OOS splitting and baseline controls are implemented, but the train window is warm-up
   only; no parameter fitting or walk-forward optimization is performed yet. The baselines are
   cost-free controls, not after-cost strategy comparisons.
-- The dashboard is a read-only static HTML renderer of a saved JSON report. It does not connect to
-  MT5, place orders, or change scope. A live FastAPI dashboard is M3 work.
+- The static dashboard is a read-only HTML renderer of a saved JSON report. The separate
+  `dashboard-live` server reads a SQLite ledger on loopback only. Neither connects to MT5, places
+  orders, or changes scope.
 - The demo backtest is a synthetic fixture, not evidence of real-world profitability.
 
 ## M3 paper-slice limitations
@@ -317,5 +342,6 @@ checks, not strategy results; they do not model spread, commission, or slippage.
   `broker_deal_ticket` are null.
 - The paper replay is deterministic over the supplied bars. It is execution/logging evidence, not a
   live demo result and not profitability evidence.
-- The static dashboard is still a report renderer. The live read-only backend and the wizard remain
-  M3 work.
+- The live read-only dashboard backend is implemented for the paper ledger. It is not yet wired to a
+  live demo execution loop, and it cannot request or execute a human action. The wizard remains M3
+  work.

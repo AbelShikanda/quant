@@ -13,7 +13,7 @@ No broker order was sent. The `paper` command has no `order_send` path.
 Observed:
 
 ```text
-80 passed
+89 passed
 ```
 
 New coverage:
@@ -26,6 +26,9 @@ New coverage:
   explicit synthetic exit, and the `paper` CLI report/dashboard.
 - `tests/test_dashboard.py` — paper order rendering, `paper_replay` mode, and the no-broker-order
   notice.
+- `tests/test_live_dashboard.py` — read-only SQLite access, no byte changes to the ledger, missing-
+  ledger handling, active-versus-finished stale semantics, loopback-only host rejection, HTTP
+  `/`, `/api/state`, and `/health` responses, and rendering without JavaScript.
 
 ## 2. Synthetic standard $1,000 paper replay
 
@@ -205,6 +208,48 @@ synthetic `EXIT` decision, then an order, fill, and position close, so the audit
 The daily loss budget resets from the last marked equity, so an open position's overnight PnL is
 included in the new day.
 
+## 7a. Live read-only dashboard evidence
+
+A fresh copy of the MT5 standard $1,000 paper replay was generated with the updated run summary so the
+ledger records the profile:
+
+```powershell
+.\.venv\Scripts\python.exe -m goldbot.cli paper `
+  --manifest config/scope.gold.v1.yaml `
+  --account-profile config/profiles/standard_1k.yaml `
+  --source mt5 `
+  --bars 1600 `
+  --context-bars 500 `
+  --replay-bars 1600 `
+  --equity 1000 `
+  --ledger reports/live.paper.mt5.1000.ledger.sqlite `
+  --report reports/live.paper.mt5.1000.json `
+  --dashboard reports/live.paper.mt5.1000.html
+```
+
+The live server was started against that ledger:
+
+```powershell
+.\.venv\Scripts\python.exe -m goldbot.cli dashboard-live `
+  --ledger reports/live.paper.mt5.1000.ledger.sqlite `
+  --port 8000 `
+  --refresh-seconds 2
+```
+
+Observed over local HTTP:
+
+```text
+page_status=200 page_bytes=12881
+state_status=200 state_bytes=26127
+mode=paper_replay profile=standard_1k equity=1002.55 finished=True
+```
+
+The state read the same run ID, 1,600 decisions, 2 paper orders, 2 paper fills, and 1 paper position
+as the report. The server refused a non-loopback host in the test suite. The dashboard opened the
+SQLite ledger with `mode=ro` and `PRAGMA query_only=ON`; the test suite verifies that reading the
+ledger does not change its bytes. This is a read-only view of the paper ledger, not a live demo
+execution loop.
+
 ## 8. What this proves and does not prove
 
 Proves:
@@ -212,6 +257,8 @@ Proves:
 - The strategy can run through an execution-shaped path without a chart, dashboard, or broker.
 - Every decision and paper execution is persisted with deterministic IDs.
 - The dashboard can show paper orders, trades, decisions, and the `paper_replay` mode.
+- The local live dashboard can read the ledger without writing it, without importing MetaTrader5,
+  and without exposing a network listener.
 - The path does not force trades when there is no entry candidate.
 - The single-writer ledger contract and one-run-per-file guard are enforced.
 
@@ -221,10 +268,12 @@ Does not prove:
 - Live polling, reconnect behavior, or kill-switch behavior.
 - Demo profitability, after-cost OOS performance, or promotion readiness.
 - That the high-risk `micro_100` profile is safe.
+- That the live dashboard is connected to a running demo execution loop. It currently displays a
+  completed paper replay.
 
 ## 9. Next M3 slice
 
-The next slice is the MT5 execution layer: a headless order router with pre-trade scope/risk/margin/
-spread/symbol/session checks, post-trade reconciliation against MT5 deals and positions, kill-switch
-flatten-and-halt, reconnect/state recovery, and a live read-only dashboard backend. The paper ledger
-is the foundation for those checks; it is not a substitute for them.
+The live read-only dashboard backend is implemented. The next slice is the MT5 execution layer: a
+headless demo order router with pre-trade scope/risk/margin/spread/symbol/session checks, post-trade
+reconciliation against MT5 deals and positions, kill-switch flatten-and-halt, and reconnect/state
+recovery. The paper ledger is the foundation for those checks; it is not a substitute for them.

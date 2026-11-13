@@ -180,10 +180,10 @@ dashboard/wizard**. Do not skip ahead.
 
 ### M2 gate decision
 
-- [~] M2 core and the first M3 paper/ledger slice are runnable and tested (`80 passed`), but broker
-  execution is not promoted. Remaining M2/M3 items above are explicit; do not treat the synthetic
-  fixture as profitability evidence. The `micro_100` profile is a high-risk override, not a
-  promotion candidate.
+- [~] M2 core and the first M3 paper/ledger/live-dashboard slice are runnable and tested (`89 passed`),
+  but broker execution is not promoted. Remaining M2/M3 items above are explicit; do not treat the
+  synthetic fixture as profitability evidence. The `micro_100` profile is a high-risk override, not
+  a promotion candidate.
 
 ---
 
@@ -228,10 +228,12 @@ dashboard/wizard**. Do not skip ahead.
 - [x] Displays profile, risk limits, decisions, trades, data quality, and alerts.
 - [x] Displays paper orders and the `paper_replay` mode badge (M3 slice).
 - [x] Cannot change scope or trade.
-- [ ] FastAPI read-only backend (M3).
-- [ ] Lightweight live HTML/JS frontend (M3).
+- [x] Local read-only SQLite backend (`dashboard-live`) using the standard library, `mode=ro`, and
+  `PRAGMA query_only=ON`; no FastAPI dependency added (M3 slice).
+- [x] Server-rendered auto-refresh HTML frontend with `/api/state` and `/health` (M3 slice).
 - [ ] Can request human action, but cannot change scope or trade.
-- [ ] Auth and local-only binding.
+- [x] Loopback-only binding (`127.0.0.1`/`localhost`); no remote exposure.
+- [ ] Authentication or remote-access design (not needed while loopback-only).
 
 ### Wizard
 
