@@ -163,6 +163,12 @@ class RiskState:
         else:
             self.current_drawdown_pct = 0.0
 
+    def start_new_day(self) -> None:
+        """Reset the daily loss budget from the last marked equity, including open PnL."""
+        self.daily_start_equity = self.equity
+        self.daily_pnl = 0.0
+        self.daily_halt = False
+
     def to_dict(self) -> dict[str, Any]:
         return to_jsonable(self)
 

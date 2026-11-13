@@ -184,7 +184,9 @@ Tracks `position_id`, `side`, `volume`, `open_price`, `open_time_utc`, `stop_los
 ### `RiskState`
 
 Tracks `equity`, `starting_equity`, `daily_start_equity`, `peak_equity`, `daily_pnl`,
-`current_drawdown_pct`, `daily_halt`, `max_drawdown_halt`, and `kill_switch`.
+`current_drawdown_pct`, `daily_halt`, `max_drawdown_halt`, and `kill_switch`. On a new UTC day,
+`start_new_day()` resets the daily loss budget from the last **marked** equity, including open-position
+PnL, not from realized equity alone.
 
 Risk limits are read from the manifest: `0.25%` per trade, `1.5%` daily loss halt, `8%` maximum
 drawdown flatten/halt.

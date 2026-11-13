@@ -300,8 +300,7 @@ class PaperRuntime:
             self.current_day = day
         elif day != self.current_day:
             self.current_day = day
-            self.risk_state.daily_start_equity = self.equity
-            self.risk_state.daily_halt = False
+            self.risk_state.start_new_day()
 
         # Protective orders are checked before discretionary decisions.
         if self.position is not None:

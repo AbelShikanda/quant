@@ -392,7 +392,7 @@ Implemented:
 
 Evidence:
 
-- `python -m pytest -q` → **79 passed**.
+- `python -m pytest -q` → **80 passed**.
 - Synthetic run: 1,200 M15 bars, 75 H4 bars, 10,000 equity → 4 entries/trades, final equity
   10,186.72 on the current fixture.
 - Standard $1,000 MT5 run: 1 trade, `LONG 0.01 4114.26 -> 4116.94`, PnL `2.67`, trailing-stop

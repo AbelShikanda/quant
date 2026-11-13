@@ -13,7 +13,7 @@ No broker order was sent. The `paper` command has no `order_send` path.
 Observed:
 
 ```text
-79 passed
+80 passed
 ```
 
 New coverage:
@@ -202,6 +202,8 @@ One paper run per ledger is the default. The ledger refuses to mix manifest hash
 second run ID; reusing the same run ID is allowed for an idempotent restart. Paper orders and fills
 have null broker tickets. Protective exits and end-of-replay force-closes create an explicit
 synthetic `EXIT` decision, then an order, fill, and position close, so the audit chain is complete.
+The daily loss budget resets from the last marked equity, so an open position's overnight PnL is
+included in the new day.
 
 ## 8. What this proves and does not prove
 

@@ -185,6 +185,18 @@ def test_trailing_stop_candidate() -> None:
     assert _winner(manifest, candidates) == "hard_or_trailing_stop"
 
 
+def test_risk_state_new_day_starts_from_marked_equity() -> None:
+    risk = _risk()
+    risk.update(10100.0)
+    risk.daily_halt = True
+    risk.start_new_day()
+    assert risk.daily_start_equity == 10100.0
+    assert risk.daily_pnl == 0.0
+    assert risk.daily_halt is False
+    risk.update(10095.0)
+    assert risk.daily_pnl == -5.0
+
+
 def test_initial_stop_uses_manifest_multiple() -> None:
     manifest = load_manifest(GOLD)
     engine = ExitEngine(manifest)

@@ -180,7 +180,7 @@ dashboard/wizard**. Do not skip ahead.
 
 ### M2 gate decision
 
-- [~] M2 core and the first M3 paper/ledger slice are runnable and tested (`79 passed`), but broker
+- [~] M2 core and the first M3 paper/ledger slice are runnable and tested (`80 passed`), but broker
   execution is not promoted. Remaining M2/M3 items above are explicit; do not treat the synthetic
   fixture as profitability evidence. The `micro_100` profile is a high-risk override, not a
   promotion candidate.

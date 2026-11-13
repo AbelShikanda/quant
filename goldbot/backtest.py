@@ -115,12 +115,11 @@ class BacktestRunner:
         ).hexdigest()[:16]
         equity = self.initial_equity
         peak_equity = equity
-        daily_start_equity = equity
         current_day = started.date()
         risk_state = RiskState(
             equity=equity,
             starting_equity=self.initial_equity,
-            daily_start_equity=daily_start_equity,
+            daily_start_equity=equity,
             peak_equity=peak_equity,
         )
         position: PositionState | None = None
@@ -134,9 +133,7 @@ class BacktestRunner:
             day = bar.time_utc.date()
             if day != current_day:
                 current_day = day
-                daily_start_equity = equity
-                risk_state.daily_start_equity = daily_start_equity
-                risk_state.daily_halt = False
+                risk_state.start_new_day()
             decision_time = bar.time_utc + timedelta(minutes=self.execution_minutes)
 
             # Protective orders are checked before discretionary decisions.

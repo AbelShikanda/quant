@@ -13,7 +13,7 @@ The `micro_100` profile is an explicit high-risk override, not a promotion candi
 Observed:
 
 ```text
-79 passed
+80 passed
 ```
 
 Key coverage:
@@ -26,7 +26,8 @@ Key coverage:
 - `tests/test_fusion.py` — both-layer requirement, conflict policy, score minimums, and
   manifest-declared required triggers.
 - `tests/test_overseer.py` — no origination, risk veto, hold behavior, exit precedence.
-- `tests/test_exits.py` — both disagreement cases and risk veto immunity.
+- `tests/test_exits.py` — both disagreement cases, risk veto immunity, and a new-day risk reset that
+  starts from the last marked equity, including open-position PnL.
 - `tests/test_strategy.py` — end-to-end decisions/trades, standard 1k sizing, $100 standard-profile
   refusal, micro-100 minimum-lot sizing, profile overlay immutability, Sharpe/Sortino/exposure
   metrics, and manifest change.
