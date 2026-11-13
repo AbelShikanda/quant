@@ -169,8 +169,10 @@ active. It cannot originate an entry from raw indicators or fundamentals.
 | 40 | `profit_take` |
 | 30 | `advisory` |
 
-The runner checks protective stop/take orders intrabar with a stop-first assumption. Discretionary
-exits are decided at bar close and filled at the next bar open with modeled costs.
+The M2 backtest runner checks protective stop/take orders intrabar with a stop-first assumption.
+Discretionary exits are decided at bar close and filled at the next bar open with modeled costs. The
+M3 paper replay fills a discretionary exit at the decision-bar close plus half-spread and slippage;
+it uses the same stop-first protective-exit convention.
 
 ## Position and risk
 
@@ -212,10 +214,34 @@ must be reproducible from the persisted views, manifest hash, and source version
 
 - SQLite is the single-writer transactional store. `config/storage.schema.sql` declares snapshots,
   decisions, orders, fills, positions, logs, incidents, and the M2 macro/run/decision tables.
-- WAL mode is enabled by `SQLiteStore`.
+- WAL mode is enabled by `SQLiteStore`. `goldbot/ledger.py` adds a `.writer.lock` file and refuses to
+  open a second writer for the same ledger.
 - DuckDB is the analytical OHLCV store. `DuckDBBarStore` writes a `bars` table and can export
   Parquet.
 - The strategy process owns the SQLite write connection. No other component may write concurrently.
+  Dashboard/report readers use separate read-only connections.
+
+## Paper execution contract (M3 slice)
+
+`goldbot/paper.py` is a deterministic **paper/dry-run replay**, not a broker router.
+
+- It replays closed M15 bars through the same `StrategyEngine` used by the backtest.
+- A decision-bar market order fills at that bar's close plus half-spread and configured slippage.
+- Protective stops/take-profits use the next bar's high/low with a stop-first assumption; the
+  order/fill price is the stop/target or the gap open. A protective exit or an end-of-replay
+  force-close creates an explicit synthetic `EXIT` decision, then an order, fill, and position close,
+  so the audit chain is complete.
+- Orders use deterministic IDs derived from the decision ID and unique idempotency keys. Paper orders
+  have `state = PAPER_FILLED` and a null broker ticket.
+- One paper run per ledger is the default. The ledger refuses to mix manifest hashes or append a
+  second run ID; reusing the same run ID is allowed for an idempotent restart. Use a new ledger for a
+  fresh replay.
+- Every decision is written to `snapshots`, `decisions`, and `strategy_decisions`. Paper executions
+  are written to `orders`, `fills`, and `positions`. Structured events are written to `logs`.
+- The report carries `mode = paper_replay`, the ledger path, the fill model, and the protective-exit
+  model. The dashboard shows paper orders and states that no broker orders were sent.
+- No `order_send` call, no MT5 deal reconciliation, and no live polling loop exist in this slice.
+  Those remain the next M3 execution layer.
 
 ## Manifest-driven parameters
 
@@ -280,3 +306,14 @@ checks, not strategy results; they do not model spread, commission, or slippage.
 - The dashboard is a read-only static HTML renderer of a saved JSON report. It does not connect to
   MT5, place orders, or change scope. A live FastAPI dashboard is M3 work.
 - The demo backtest is a synthetic fixture, not evidence of real-world profitability.
+
+## M3 paper-slice limitations
+
+- There is no MT5 broker order router, no `order_send` path, no live polling loop, no post-trade
+  reconciliation against MT5 deals/positions, no kill switch, and no reconnect drill yet.
+- Paper orders and fills are model events, not broker fills. `broker_order_ticket` and
+  `broker_deal_ticket` are null.
+- The paper replay is deterministic over the supplied bars. It is execution/logging evidence, not a
+  live demo result and not profitability evidence.
+- The static dashboard is still a report renderer. The live read-only backend and the wizard remain
+  M3 work.

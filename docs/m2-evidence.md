@@ -13,7 +13,7 @@ The `micro_100` profile is an explicit high-risk override, not a promotion candi
 Observed:
 
 ```text
-73 passed
+79 passed
 ```
 
 Key coverage:
@@ -38,6 +38,11 @@ Key coverage:
   GVZ, Treasury, COT, and H4 aggregation.
 - `tests/test_stress.py` — gap-through-stop fills at the gap open, gap-through-take-profit fills at
   the gap open, and missing/stale macro data is reported rather than forward-filled.
+- `tests/test_ledger.py` — WAL mode, single-writer lock, idempotent decision/order/fill writes, ledger
+  round trips, and refusal to mix manifest hashes or run IDs in one ledger.
+- `tests/test_paper.py` — paper replay persistence, order/fill/position counts, no broker tickets,
+  protective-exit stop-first behavior, and the `paper` CLI report/dashboard. M3 paper evidence is in
+  `docs/m3-evidence.md`.
 
 ## 2. Manifest-parameter change without a code edit
 

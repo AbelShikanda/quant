@@ -20,7 +20,9 @@ from .data import (
     make_synthetic_bars,
     make_synthetic_macro_store,
 )
+from .ledger import Ledger
 from .manifest import load_manifest, manifest_hash
+from .paper import PaperRuntime, replay_times_from_bars
 from .profiles import load_manifest_with_profile
 from .validator import validate_manifest, write_json_report, write_markdown_report
 from .walkforward import WalkForwardRunner
@@ -228,6 +230,100 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_paper(args: argparse.Namespace) -> int:
+    """Run the paper/dry-run execution path and persist everything to SQLite."""
+    try:
+        manifest, execution, context, macro_store = _build_run_inputs(args)
+        with Ledger(args.ledger) as ledger:
+            runtime = PaperRuntime(
+                manifest=manifest,
+                ledger=ledger,
+                execution_bars=execution,
+                context_bars=context,
+                macro_store=macro_store,
+                initial_equity=args.equity,
+            )
+            times = replay_times_from_bars(
+                execution,
+                replay_bars=args.replay_bars,
+            )
+            if not times:
+                raise RuntimeError("no replay decision times were generated")
+            result = runtime.run_replay(times)
+    except Exception as exc:  # noqa: BLE001 - CLI must report, not hide, the failure
+        print(f"paper failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    payload = result.to_dict()
+    if args.report:
+        path = Path(args.report)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, default=str) + "\n",
+            encoding="utf-8",
+        )
+        print(f"wrote paper report: {path}")
+    if args.dashboard:
+        dashboard_path = build_dashboard(payload, args.dashboard)
+        print(f"wrote read-only paper dashboard: {dashboard_path}")
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "run_id": result.run_id,
+                    "mode": result.mode,
+                    "scope_id": result.scope_id,
+                    "manifest_hash": result.manifest_hash,
+                    "account_profile": result.account_profile,
+                    "high_risk_override": result.high_risk_override,
+                    "promotion_eligible": result.promotion_eligible,
+                    "ledger_path": result.ledger_path,
+                    "decision_count": len(result.decisions),
+                    "order_count": len(result.orders),
+                    "fill_count": len(result.fills),
+                    "trade_count": len(result.trades),
+                    "final_equity": result.final_equity,
+                    "metrics": result.metrics,
+                    "trades": [trade.to_dict() for trade in result.trades],
+                },
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+        return 0
+
+    print("mode: paper_replay (no broker orders were sent)")
+    print(f"scope: {result.scope_id}")
+    print(f"run_id: {result.run_id}")
+    print(f"manifest_hash: {result.manifest_hash}")
+    print(
+        f"account_profile: {result.account_profile} "
+        f"(high_risk={result.high_risk_override}, "
+        f"promotion_eligible={result.promotion_eligible})"
+    )
+    print(f"ledger: {result.ledger_path}")
+    print(f"bars: M15={len(execution)} H4={len(context)}")
+    print(f"replay_decisions: {len(result.decisions)}")
+    print(f"orders: {len(result.orders)} fills: {len(result.fills)}")
+    print(f"initial_equity: {result.initial_equity:.2f}")
+    print(f"final_equity: {result.final_equity:.2f}")
+    print(f"metrics: {json.dumps(result.metrics, ensure_ascii=False)}")
+    for trade in result.trades:
+        print(
+            f"paper trade {trade.trade_id}: {trade.side} {trade.volume:.2f} "
+            f"{trade.entry_price:.2f} -> {trade.exit_price:.2f} "
+            f"pnl={trade.pnl:.2f} reason={trade.exit_reason}"
+        )
+    if args.show_decisions > 0:
+        for decision in result.decisions[-args.show_decisions :]:
+            print(
+                f"decision {decision.as_of_utc.isoformat()} {decision.decision_type} "
+                f"score={decision.combined_score:+.3f} reasons={decision.reasons}"
+            )
+    return 0
+
+
 def _cmd_walkforward(args: argparse.Namespace) -> int:
     try:
         manifest, execution, context, macro_store = _build_run_inputs(args)
@@ -421,6 +517,40 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--show-decisions", type=int, default=10)
     run.add_argument("--json", action="store_true", help="print summary JSON")
     run.set_defaults(func=_cmd_run)
+
+    paper = subparsers.add_parser(
+        "paper",
+        help="replay closed bars through the strategy and persist paper executions",
+    )
+    paper.add_argument("--manifest", required=True, help="path to scope YAML")
+    paper.add_argument(
+        "--account-profile",
+        help="explicit account-profile YAML overlay, e.g. config/profiles/micro_100.yaml",
+    )
+    paper.add_argument("--source", choices=["synthetic", "mt5"], default="synthetic")
+    paper.add_argument("--macro-dir", help="local macro CSV/XLSX directory; synthetic if omitted")
+    paper.add_argument("--bars", type=int, default=1600, help="M15 bars to load")
+    paper.add_argument("--context-bars", type=int, default=500, help="H4 bars to load from MT5")
+    paper.add_argument("--macro-days", type=int, default=520, help="synthetic macro days")
+    paper.add_argument("--equity", type=float, default=10000.0, help="paper starting equity")
+    paper.add_argument("--drift", type=float, default=0.12, help="synthetic M15 drift per bar")
+    paper.add_argument("--amplitude", type=float, default=6.0, help="synthetic M15 wave amplitude")
+    paper.add_argument(
+        "--replay-bars",
+        type=int,
+        default=0,
+        help="replay the last N closed bars; 0 = only the latest closed bar",
+    )
+    paper.add_argument(
+        "--ledger",
+        default="reports/goldbot.ledger.sqlite",
+        help="SQLite ledger path (single writer)",
+    )
+    paper.add_argument("--report", help="write full JSON paper report")
+    paper.add_argument("--dashboard", help="write a read-only HTML dashboard from the paper run")
+    paper.add_argument("--show-decisions", type=int, default=10)
+    paper.add_argument("--json", action="store_true", help="print summary JSON")
+    paper.set_defaults(func=_cmd_paper)
 
     wf = subparsers.add_parser(
         "walkforward",

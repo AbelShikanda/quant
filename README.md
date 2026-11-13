@@ -4,11 +4,12 @@ A quantamental XAUUSD research and trading project. **Gold macro fundamentals de
 consider; M15 technicals define when to act.** The overseer is a rule-based referee, not a trade
 originator. Exits are first-class, especially SELL decisions.
 
-This repository currently implements **M1: the scope manifest and headless validator** and the
-**M2 strategy core**: point-in-time macro data, fundamental/technical scoring, fusion, the rule-based
-overseer, first-class exits, an event-driven M15/H4 backtest harness, and a **read-only static HTML
-dashboard renderer**. Order execution, a live dashboard backend, and the wizard are intentionally
-not built yet.
+This repository currently implements **M1: the scope manifest and headless validator**, the
+**M2 strategy core** (point-in-time macro data, fundamental/technical scoring, fusion, the rule-based
+overseer, first-class exits, an event-driven M15/H4 backtest harness, and walk-forward/baseline
+controls), and the first **M3 slice**: a persistent SQLite ledger, a paper/dry-run execution replay,
+and a read-only dashboard that shows paper orders. **No broker order has been sent.** The MT5 order
+router, live dashboard backend, and wizard are still M3 work.
 
 ## Read this first
 
@@ -84,7 +85,7 @@ entry count change without a code edit:
 ```
 
 The fixed interfaces are documented in `docs/contracts.md`. Verification commands and observed
-results are recorded in `docs/m2-evidence.md`.
+results are recorded in `docs/m2-evidence.md` and `docs/m3-evidence.md`.
 
 ### Walk-forward and baseline controls
 
@@ -168,13 +169,55 @@ MetaTrader5, connect to a broker, place orders, or change scope.
   --max-decisions 200
 ```
 
-The `run` command can also emit it directly with `--dashboard <path>`. The page shows the profile,
-risk banner, account model, leverage and notional caps, risk limits, equity curve, trades, explained
-decisions, and data-quality counts.
+The `run`, `walkforward`, and `paper` commands can also emit it directly with `--dashboard <path>`.
+The page shows the profile, risk banner, account model, leverage and notional caps, risk limits,
+equity curve, trades, paper orders when present, explained decisions, and data-quality counts. Paper
+reports carry a `paper_replay` mode badge and a no-broker-order notice.
 
 This static renderer is an owner-requested, read-only exception to the `notes.txt` "no dashboard"
 non-goal. It has no server, no MT5 connection, and no write path. The live dashboard backend and
 wizard remain M3 work.
+
+### Paper execution and the SQLite ledger (M3)
+
+The `paper` command replays closed M15 bars through the real strategy, records every decision,
+paper order, paper fill, and paper position in a single-writer SQLite ledger, and can render the same
+read-only dashboard. It is an execution and logging exercise: **it never imports an order router and
+never calls `order_send`.**
+
+```powershell
+.\.venv\Scripts\python.exe -m goldbot.cli paper `
+  --manifest config/scope.gold.v1.yaml `
+  --account-profile config/profiles/standard_1k.yaml `
+  --source mt5 `
+  --bars 1600 `
+  --context-bars 500 `
+  --replay-bars 1600 `
+  --equity 1000 `
+  --ledger reports/m3.paper.mt5.1000.ledger.sqlite `
+  --report reports/m3.paper.mt5.1000.json `
+  --dashboard reports/m3.paper.mt5.1000.html
+```
+
+- `--replay-bars 0` processes only the latest closed bar. A positive value replays the last N closed
+  bars in order. The replay uses the `--equity` value as its starting equity; it does not read the
+  live account balance or place orders. The printed `mt5 account` line is the terminal account, not
+  the replay equity.
+- The paper fill model is a market order at the decision-bar close plus half-spread and configured
+  slippage. Protective stops/take-profits use the next bar's high/low, stop first; their order/fill
+  price is the stop/target (or the gap open).
+- Every decision is persisted in `snapshots`, `decisions`, and `strategy_decisions`. Paper entries and
+  strategy exits create `orders` and `fills` rows; protective exits and end-of-replay force-closes
+  also create an explicit synthetic `EXIT` decision so the audit chain is complete.
+- The ledger is SQLite with WAL and a `.writer.lock` file. Only one process may write. The dashboard
+  and analytics are read-only. Use a separate ledger per run; the ledger refuses to mix manifest
+  hashes or append a second run ID. Reusing the same run ID is allowed for an idempotent restart.
+- The dashboard labels the report `mode: paper_replay`, shows paper orders, and states that no broker
+  orders were sent.
+- The synthetic fixture and the short MT5 sample are not profitability evidence. The MT5 paper run is
+  execution/logging evidence only.
+
+Verification commands and observed results are recorded in `docs/m3-evidence.md`.
 
 ## Validate the gold scope
 
@@ -349,7 +392,7 @@ Implemented:
 
 Evidence:
 
-- `python -m pytest -q` → **73 passed**.
+- `python -m pytest -q` → **79 passed**.
 - Synthetic run: 1,200 M15 bars, 75 H4 bars, 10,000 equity → 4 entries/trades, final equity
   10,186.72 on the current fixture.
 - Standard $1,000 MT5 run: 1 trade, `LONG 0.01 4114.26 -> 4116.94`, PnL `2.67`, trailing-stop
@@ -384,17 +427,31 @@ Evidence:
 - Metrics: the report includes `sharpe_daily_annualized`, `sortino_daily_annualized`,
   `daily_return_count`, `average_entry_notional`, `max_entry_notional`, and entry-exposure
   percentages. Sharpe/Sortino stay `null` until at least 20 trading days have closed trades.
+- Paper/ledger tests: WAL mode, single-writer lock, idempotent decision/order/fill writes, paper
+  replay persistence, protective-exit stop-first behavior, and the `paper` CLI report/dashboard.
+- MT5 paper replay, standard $1,000 profile: 1,600 decision times, 1 paper trade, 2 paper
+  orders/fills, final equity 1,002.55 (+0.26%). The trade exited on a trailing stop. This is
+  execution/logging evidence, not a profitability result.
+- MT5 paper replay, high-risk $100 profile: the same paper trade, final equity 102.55 (+2.55%),
+  marked high-risk and not promotion-eligible.
+- The 500-bar MT5 paper replay produced 0 orders and 0 trades, which confirms the path does not
+  force a trade when the strategy has no entry candidate.
 
 Not yet implemented in M2: automated ALFRED download/replay, iShares IAU (deferred to v2 in the
 manifest), manual WGC/IMF XLSX strategy ingestion (still HUMAN_JUDGMENT and not consumed by the
-overseer), and raw source snapshot hashing. These remain M3 work. Walk-forward/OOS splits and
-baseline controls are implemented, but the train window is warm-up only; no parameter fitting is
-performed yet. The session-filter mechanism exists but is disabled in the manifest until the owner
-confirms the session hours.
+overseer), and raw source snapshot hashing. Walk-forward/OOS splits and baseline controls are
+implemented, but the train window is warm-up only; no parameter fitting is performed yet. The
+session-filter mechanism exists but is disabled in the manifest until the owner confirms the session
+hours.
 
-## Non-goals for M1/M2
+Not yet implemented in M3: the MT5 broker order router, pre-trade margin/spread/symbol/session
+checks, post-trade reconciliation against MT5 deals, the kill switch, reconnect drills, broker-side
+daily-loss/max-drawdown flatten/halt enforcement, the live dashboard backend, and the wizard. The
+current `paper` command is a replay, not a live loop and not a broker fill.
 
-- No order execution.
-- No live dashboard backend. The M2 dashboard is a static renderer of a saved report.
+## Non-goals for the current M1/M2/M3-paper slice
+
+- No broker order execution. The `paper` command is a replay; it does not call `order_send`.
+- No live dashboard backend. The dashboard is a static renderer of a saved report.
 - No wizard.
 - No real-money trading.

@@ -10,6 +10,7 @@ from goldbot.dashboard import build_dashboard, build_dashboard_from_file
 def _report() -> dict:
     return {
         "run_id": "run-test-0001",
+        "mode": "paper_replay",
         "scope_id": "gold.v1",
         "manifest_hash": "abc123",
         "initial_equity": 100.0,
@@ -43,6 +44,19 @@ def _report() -> dict:
             "min_lot": 0.01,
         },
         "data_quality": {"execution_bars": 500, "context_bars": 500, "macro_series": 6},
+        "orders": [
+            {
+                "order_id": "ord-0001",
+                "submitted_at_utc": "2026-11-11T21:15:00+00:00",
+                "side": "LONG",
+                "order_type": "MARKET",
+                "volume": 0.01,
+                "price": 4114.11,
+                "stop_loss": 4100.0,
+                "take_profit": 4130.0,
+                "state": "PAPER_FILLED",
+            }
+        ],
         "trades": [
             {
                 "trade_id": "pos-0001",
@@ -90,6 +104,10 @@ def test_dashboard_renders_high_risk_banner_and_read_only_notice(tmp_path: Path)
     assert "Read-only dashboard" in text
     assert "does not connect to MT5" in text
     assert "pos-0001" in text
+    assert "Orders / paper executions" in text
+    assert "ord-0001" in text
+    assert "paper_replay" in text
+    assert "no broker orders were sent" in text
     assert "<svg" in text
     assert "import MetaTrader5" not in text
     assert "<script" not in text

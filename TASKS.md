@@ -180,9 +180,10 @@ dashboard/wizard**. Do not skip ahead.
 
 ### M2 gate decision
 
-- [~] M2 core is runnable and tested (`73 passed`), but execution is not promoted. Remaining M2/M3
-  items above are explicit; do not treat the synthetic fixture as profitability evidence. The
-  `micro_100` profile is a high-risk override, not a promotion candidate.
+- [~] M2 core and the first M3 paper/ledger slice are runnable and tested (`79 passed`), but broker
+  execution is not promoted. Remaining M2/M3 items above are explicit; do not treat the synthetic
+  fixture as profitability evidence. The `micro_100` profile is a high-risk override, not a
+  promotion candidate.
 
 ---
 
@@ -190,22 +191,24 @@ dashboard/wizard**. Do not skip ahead.
 
 ### Execution
 
+- [x] Paper/dry-run execution replay with deterministic order IDs and idempotency keys (M3 slice).
 - [ ] Headless MT5 order router with idempotency keys.
 - [ ] Pre-trade checks: scope, risk, margin, spread, symbol state, session.
 - [ ] Post-trade reconciliation against MT5 deals and positions.
 - [ ] Kill switch: flatten and halt.
 - [ ] Reconnect drill and state recovery.
-- [ ] Daily loss halt enforcement.
-- [ ] Max drawdown flatten/halt enforcement.
+- [x] Daily loss halt enforcement in the paper replay risk state (broker flatten still pending).
+- [x] Max drawdown flatten/halt enforcement in the paper replay risk state (broker flatten still
+  pending).
 - [ ] No-chart-assumption tests.
 
 ### Logging and storage
 
-- [ ] SQLite schema with WAL and single-writer enforcement.
-- [ ] Snapshots table: market, fundamentals, technicals, fusion, overseer.
-- [ ] Decisions table: inputs, scores, vetoes, versions.
-- [ ] Orders/fills/positions tables.
-- [ ] Logs table with structured JSON.
+- [x] SQLite schema with WAL and single-writer enforcement.
+- [x] Snapshots table: market, fundamentals, technicals, fusion, overseer.
+- [x] Decisions table: inputs, scores, vetoes, versions.
+- [x] Orders/fills/positions tables.
+- [x] Logs table with structured JSON.
 - [ ] Parquet/DuckDB analytical exports.
 - [ ] Retention and backup policy.
 
@@ -223,6 +226,7 @@ dashboard/wizard**. Do not skip ahead.
 - [x] Static read-only HTML renderer for saved run reports (M2).
 - [x] Never connects to MT5 directly.
 - [x] Displays profile, risk limits, decisions, trades, data quality, and alerts.
+- [x] Displays paper orders and the `paper_replay` mode badge (M3 slice).
 - [x] Cannot change scope or trade.
 - [ ] FastAPI read-only backend (M3).
 - [ ] Lightweight live HTML/JS frontend (M3).

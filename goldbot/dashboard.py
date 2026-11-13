@@ -122,6 +122,35 @@ def _trades_table(trades: list[Any]) -> str:
     )
 
 
+def _orders_table(orders: list[Any]) -> str:
+    if not orders:
+        return '<p class="muted">No orders recorded.</p>'
+    rows = []
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        rows.append(
+            "<tr>"
+            f"<td><code>{_e(order.get('order_id'))}</code></td>"
+            f"<td>{_e(order.get('submitted_at_utc'))}</td>"
+            f"<td>{_e(order.get('side'))}</td>"
+            f"<td>{_e(order.get('order_type'))}</td>"
+            f"<td>{_num(order.get('volume'), 2)}</td>"
+            f"<td>{_num(order.get('price'), 2)}</td>"
+            f"<td>{_num(order.get('stop_loss'), 2)}</td>"
+            f"<td>{_num(order.get('take_profit'), 2)}</td>"
+            f"<td><span class='badge'>{_e(order.get('state'))}</span></td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr><th>Order</th><th>Submitted (UTC)</th><th>Side</th>"
+        "<th>Type</th><th>Lots</th><th>Price</th><th>Stop</th><th>Target</th>"
+        "<th>State</th></tr></thead><tbody>"
+        + "\n".join(rows)
+        + "</tbody></table>"
+    )
+
+
 def _decisions_table(decisions: list[Any], max_decisions: int) -> str:
     if not decisions:
         return '<p class="muted">No decisions recorded.</p>'
@@ -229,6 +258,8 @@ def build_dashboard(
     data_quality = _dict(report.get("data_quality"))
     trades = _list(report.get("trades"))
     decisions = _list(report.get("decisions"))
+    orders = _list(report.get("orders"))
+    mode = str(report.get("mode") or "")
     high_risk = bool(report.get("high_risk_override", False))
     promotion = bool(report.get("promotion_eligible", True))
     profile = str(report.get("account_profile") or "base")
@@ -256,6 +287,8 @@ def build_dashboard(
         ("Sortino (daily)", _num(metrics.get("sortino_daily_annualized"), 2)),
         ("Max entry exposure", _pct(metrics.get("max_entry_exposure_pct"))),
     ]
+    if orders:
+        cards.append(("Orders", _num(len(orders), 0)))
     card_html = "\n".join(
         f'<div class="card"><div class="label">{_e(label)}</div>'
         f'<div class="value">{value}</div></div>'
@@ -311,6 +344,7 @@ td.reasons {{ color: #cbd5e1; font-size: 12px; }}
   scope <strong>{_e(report.get('scope_id'))}</strong> ·
   run <strong>{_e(report.get('run_id'))}</strong> ·
   profile <span class="badge">{_e(profile)}</span> ·
+  {('mode <span class="badge">' + _e(mode) + '</span> · ') if mode else ''}
   manifest <code>{_e(report.get('manifest_hash'))}</code>
 </div>
 <div class="banner {banner_class}">{_e(banner_text)}</div>
@@ -344,13 +378,17 @@ at least 20 trading days have closed trades. Exposure is entry notional / initia
 <h2>Trades</h2>
 {_trades_table(trades)}
 
+{('<h2>Orders / paper executions</h2>' + _orders_table(orders)) if orders else ''}
+
 <h2>Decisions (last {_num(max_decisions, 0)})</h2>
 {_decisions_table(decisions, max_decisions)}
 
 <div class="footer">
   Read-only dashboard. Generated from a saved JSON run report. It does not connect to MT5,
-  does not place orders, and cannot change the scope. Synthetic fixtures are not profitability
-  evidence; promotion requires the demo/OOS gates in AGENTS.md.
+  does not place orders, and cannot change the scope.
+  {('This report is a paper/dry-run replay; no broker orders were sent. ') if mode == 'paper_replay' else ''}
+  Synthetic fixtures are not profitability evidence; promotion requires the demo/OOS gates in
+  AGENTS.md.
 </div>
 </body>
 </html>
