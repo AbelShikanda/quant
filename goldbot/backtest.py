@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -77,6 +77,8 @@ class BacktestRunner:
         macro_store: PointInTimeStore,
         initial_equity: float | None = None,
         record_decisions: bool = True,
+        entry_start_utc: datetime | None = None,
+        entry_end_utc: datetime | None = None,
     ) -> None:
         self.manifest = manifest
         self.strategy = StrategyEngine(manifest)
@@ -89,6 +91,8 @@ class BacktestRunner:
             else as_dict(as_dict(manifest.get("strategy")).get("sizing")).get("initial_equity", 10000.0)
         )
         self.record_decisions = record_decisions
+        self.entry_start_utc = ensure_utc(entry_start_utc) if entry_start_utc else None
+        self.entry_end_utc = ensure_utc(entry_end_utc) if entry_end_utc else None
         self.execution_minutes = _timeframe_minutes(
             str(as_dict(manifest.get("market")).get("execution_bar", "M15"))
         )
@@ -184,6 +188,18 @@ class BacktestRunner:
                 position=position,
                 risk_state=risk_state,
             )
+            if decision.decision_type == "ENTER_LONG" and not self._entry_allowed(decision_time):
+                decision = replace(
+                    decision,
+                    decision_type="NO_TRADE",
+                    position_size=None,
+                    stop_loss=None,
+                    take_profit=None,
+                    reasons=[
+                        *decision.reasons,
+                        "entry suppressed: outside the active walk-forward test window",
+                    ],
+                )
             if self.record_decisions:
                 decisions.append(decision)
 
@@ -244,26 +260,6 @@ class BacktestRunner:
             decisions,
             contract_size_oz=self.contract_size_oz,
         )
-        market = as_dict(self.manifest.get("market"))
-        risk_config = as_dict(self.manifest.get("risk"))
-        sizing_config = as_dict(as_dict(self.manifest.get("strategy")).get("sizing"))
-        risk_summary = {
-            "account_model": market.get("account_model"),
-            "leverage_cap": float(risk_config.get("leverage_cap", 1.0)),
-            "max_notional_exposure_ratio": float(
-                market.get("max_notional_exposure_ratio", 1.0)
-            ),
-            "per_trade_equity_pct": float(risk_config.get("per_trade_equity_pct", 0.25)),
-            "min_lot_risk_cap_pct": float(
-                sizing_config.get("min_lot_risk_cap_pct", 0.0)
-            ),
-            "daily_loss_halt_pct": float(risk_config.get("daily_loss_halt_pct", 1.5)),
-            "max_drawdown_flatten_pct": float(
-                risk_config.get("max_drawdown_flatten_pct", 8.0)
-            ),
-            "contract_size_oz": float(sizing_config.get("contract_size_oz", 100.0)),
-            "min_lot": float(sizing_config.get("min_lot", 0.01)),
-        }
         return BacktestResult(
             run_id=run_id,
             scope_id=str(self.manifest.get("scope_id", "unknown")),
@@ -291,8 +287,15 @@ class BacktestRunner:
             promotion_eligible=bool(
                 self.manifest.get("profile_promotion_eligible", True)
             ),
-            risk_summary=risk_summary,
+            risk_summary=risk_summary_from_manifest(self.manifest),
         )
+
+    def _entry_allowed(self, decision_time: datetime) -> bool:
+        if self.entry_start_utc is not None and decision_time < self.entry_start_utc:
+            return False
+        if self.entry_end_utc is not None and decision_time >= self.entry_end_utc:
+            return False
+        return True
 
     def _protective_exit(self, position: PositionState, bar: Bar) -> tuple[float | None, str | None]:
         if position.stop_loss is not None and bar.low <= position.stop_loss:
@@ -342,6 +345,46 @@ class BacktestRunner:
 def _timeframe_minutes(timeframe: str) -> int:
     mapping = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
     return mapping.get(timeframe.upper(), 15)
+
+
+def risk_summary_from_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Return the risk/account fields shown in reports and the dashboard."""
+    market = as_dict(manifest.get("market"))
+    risk_config = as_dict(manifest.get("risk"))
+    sizing_config = as_dict(as_dict(manifest.get("strategy")).get("sizing"))
+    return {
+        "account_model": market.get("account_model"),
+        "leverage_cap": float(risk_config.get("leverage_cap", 1.0)),
+        "max_notional_exposure_ratio": float(
+            market.get("max_notional_exposure_ratio", 1.0)
+        ),
+        "per_trade_equity_pct": float(risk_config.get("per_trade_equity_pct", 0.25)),
+        "min_lot_risk_cap_pct": float(sizing_config.get("min_lot_risk_cap_pct", 0.0)),
+        "daily_loss_halt_pct": float(risk_config.get("daily_loss_halt_pct", 1.5)),
+        "max_drawdown_flatten_pct": float(
+            risk_config.get("max_drawdown_flatten_pct", 8.0)
+        ),
+        "contract_size_oz": float(sizing_config.get("contract_size_oz", 100.0)),
+        "min_lot": float(sizing_config.get("min_lot", 0.01)),
+    }
+
+
+def compute_metrics(
+    initial_equity: float,
+    final_equity: float,
+    trades: list[Trade],
+    decisions: list[StrategyDecision],
+    *,
+    contract_size_oz: float = 100.0,
+) -> dict[str, float | int | None]:
+    """Public wrapper for the backtest metric calculation."""
+    return _metrics(
+        initial_equity,
+        final_equity,
+        trades,
+        decisions,
+        contract_size_oz=contract_size_oz,
+    )
 
 
 def _metrics(

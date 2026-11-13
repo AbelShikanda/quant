@@ -23,6 +23,7 @@ from .data import (
 from .manifest import load_manifest, manifest_hash
 from .profiles import load_manifest_with_profile
 from .validator import validate_manifest, write_json_report, write_markdown_report
+from .walkforward import WalkForwardRunner
 
 
 def _load_manifest_for_run(args: argparse.Namespace) -> dict:
@@ -227,6 +228,87 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_walkforward(args: argparse.Namespace) -> int:
+    try:
+        manifest, execution, context, macro_store = _build_run_inputs(args)
+        runner = WalkForwardRunner(
+            manifest=manifest,
+            execution_bars=execution,
+            context_bars=context,
+            macro_store=macro_store,
+            initial_equity=args.equity,
+            train_bars=args.train_bars,
+            test_bars=args.test_bars,
+            step_bars=args.step_bars,
+            mode=args.mode,
+            random_runs=args.random_runs,
+            baseline_fast=args.baseline_fast,
+            baseline_slow=args.baseline_slow,
+        )
+        result = runner.run()
+    except Exception as exc:  # noqa: BLE001 - CLI must report, not hide, the failure
+        print(f"walkforward failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    result_payload = result.to_dict()
+    if args.report:
+        path = Path(args.report)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(result_payload, indent=2, ensure_ascii=False, default=str) + "\n",
+            encoding="utf-8",
+        )
+        print(f"wrote walk-forward report: {path}")
+    if args.dashboard:
+        dashboard_path = build_dashboard(result_payload, args.dashboard)
+        print(f"wrote read-only dashboard: {dashboard_path}")
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "run_id": result.run_id,
+                    "scope_id": result.scope_id,
+                    "manifest_hash": result.manifest_hash,
+                    "account_profile": result.account_profile,
+                    "high_risk_override": result.high_risk_override,
+                    "promotion_eligible": result.promotion_eligible,
+                    "walk_forward": result.config.to_dict(),
+                    "metrics": result.metrics,
+                    "baselines": result.baselines,
+                    "folds": [fold.to_dict() for fold in result.folds],
+                },
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+        return 0
+    print(f"scope: {result.scope_id}")
+    print(f"run_id: {result.run_id}")
+    print(f"manifest_hash: {result.manifest_hash}")
+    print(
+        f"account_profile: {result.account_profile} "
+        f"(high_risk={result.high_risk_override}, "
+        f"promotion_eligible={result.promotion_eligible})"
+    )
+    print(f"walk_forward: {json.dumps(result.config.to_dict(), ensure_ascii=False)}")
+    print(f"bars: M15={len(execution)} H4={len(context)}")
+    print(f"initial_equity: {result.initial_equity:.2f}")
+    print(f"final_equity: {result.final_equity:.2f}")
+    print(f"metrics: {json.dumps(result.metrics, ensure_ascii=False)}")
+    print(f"baselines: {json.dumps(result.baselines, ensure_ascii=False)}")
+    if args.show_folds:
+        for fold in result.folds:
+            metrics = fold.metrics
+            print(
+                f"fold {fold.fold.fold_id}: "
+                f"test={fold.fold.test_start_utc.isoformat()}..{fold.fold.test_end_utc.isoformat()} "
+                f"trades={metrics.get('trade_count')} "
+                f"return={metrics.get('total_return_pct')}% "
+                f"drawdown={metrics.get('max_drawdown_pct')}%"
+            )
+    return 0
+
+
 def _cmd_demo_param(args: argparse.Namespace) -> int:
     try:
         manifest = _load_manifest_for_run(args)
@@ -339,6 +421,46 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--show-decisions", type=int, default=10)
     run.add_argument("--json", action="store_true", help="print summary JSON")
     run.set_defaults(func=_cmd_run)
+
+    wf = subparsers.add_parser(
+        "walkforward",
+        help="run non-overlapping walk-forward / out-of-sample folds",
+    )
+    wf.add_argument("--manifest", required=True, help="path to scope YAML")
+    wf.add_argument(
+        "--account-profile",
+        help="explicit account-profile YAML overlay, e.g. config/profiles/micro_100.yaml",
+    )
+    wf.add_argument("--source", choices=["synthetic", "mt5"], default="synthetic")
+    wf.add_argument("--macro-dir", help="local macro CSV/XLSX directory; synthetic if omitted")
+    wf.add_argument("--bars", type=int, default=1600, help="M15 bars to load")
+    wf.add_argument("--context-bars", type=int, default=500, help="H4 bars to load from MT5")
+    wf.add_argument("--macro-days", type=int, default=520, help="synthetic macro days")
+    wf.add_argument("--equity", type=float, default=10000.0, help="backtest starting equity")
+    wf.add_argument("--drift", type=float, default=0.12, help="synthetic M15 drift per bar")
+    wf.add_argument("--amplitude", type=float, default=6.0, help="synthetic M15 wave amplitude")
+    wf.add_argument("--train-bars", type=int, default=600, help="bars before each test window")
+    wf.add_argument("--test-bars", type=int, default=200, help="bars in each test window")
+    wf.add_argument(
+        "--step-bars",
+        type=int,
+        default=None,
+        help="bars to advance between folds; defaults to test-bars",
+    )
+    wf.add_argument(
+        "--mode",
+        choices=["rolling", "expanding"],
+        default="rolling",
+        help="rolling keeps a fixed train size; expanding keeps all history",
+    )
+    wf.add_argument("--random-runs", type=int, default=200, help="random-entry control runs")
+    wf.add_argument("--baseline-fast", type=int, default=50, help="simple-trend fast EMA")
+    wf.add_argument("--baseline-slow", type=int, default=200, help="simple-trend slow EMA")
+    wf.add_argument("--report", help="write full JSON walk-forward report")
+    wf.add_argument("--dashboard", help="write a read-only HTML dashboard from the run")
+    wf.add_argument("--show-folds", action="store_true", help="print one line per fold")
+    wf.add_argument("--json", action="store_true", help="print summary JSON")
+    wf.set_defaults(func=_cmd_walkforward)
 
     demo = subparsers.add_parser(
         "demo-param",

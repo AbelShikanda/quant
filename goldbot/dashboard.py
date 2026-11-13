@@ -154,6 +154,67 @@ def _decisions_table(decisions: list[Any], max_decisions: int) -> str:
     )
 
 
+def _walkforward_section(report: dict[str, Any]) -> str:
+    walk_forward = _dict(report.get("walk_forward"))
+    folds = [fold for fold in _list(report.get("folds")) if isinstance(fold, dict)]
+    baselines = _dict(report.get("baselines"))
+    if not walk_forward and not folds and not baselines:
+        return ""
+    parts: list[str] = ["<h2>Walk-forward / out-of-sample</h2>"]
+    if walk_forward:
+        parts.append(
+            '<p class="muted">'
+            f"mode <strong>{_e(walk_forward.get('mode'))}</strong> · "
+            f"train {_num(walk_forward.get('train_bars'), 0)} bars · "
+            f"test {_num(walk_forward.get('test_bars'), 0)} bars · "
+            f"step {_num(walk_forward.get('step_bars'), 0)} bars"
+            "</p>"
+        )
+    if baselines:
+        rows = [
+            ("Buy and hold", _pct(baselines.get("buy_and_hold_return_pct"))),
+            (
+                "Simple trend (fast EMA > slow EMA)",
+                _pct(baselines.get("simple_trend_return_pct")),
+            ),
+            ("Random entry mean", _pct(baselines.get("random_entry_mean_return_pct"))),
+            ("Random entry median", _pct(baselines.get("random_entry_median_return_pct"))),
+            ("Random entry p05", _pct(baselines.get("random_entry_p05_return_pct"))),
+            ("Random entry p95", _pct(baselines.get("random_entry_p95_return_pct"))),
+        ]
+        body = "\n".join(
+            f"<tr><th>{_e(label)}</th><td>{value}</td></tr>" for label, value in rows
+        )
+        parts.append(
+            "<h3>Baseline controls</h3>"
+            f"<table><tbody>{body}</tbody></table>"
+            f'<p class="muted">{_e(baselines.get("note"))}</p>'
+        )
+    if folds:
+        rows = []
+        for fold in folds:
+            metrics = _dict(fold.get("metrics"))
+            rows.append(
+                "<tr>"
+                f"<td>{_num(fold.get('fold_id'), 0)}</td>"
+                f"<td>{_e(fold.get('test_start_utc'))}</td>"
+                f"<td>{_e(fold.get('test_end_utc'))}</td>"
+                f"<td>{_num(metrics.get('trade_count'), 0)}</td>"
+                f"<td>{_pct(metrics.get('total_return_pct'))}</td>"
+                f"<td>{_pct(metrics.get('max_drawdown_pct'))}</td>"
+                "</tr>"
+            )
+        parts.append(
+            "<h3>Folds</h3>"
+            "<table><thead><tr><th>Fold</th><th>Test start (UTC)</th>"
+            "<th>Test end (UTC)</th><th>Trades</th><th>Return</th>"
+            "<th>Max drawdown</th></tr></thead><tbody>"
+            + "\n".join(rows)
+            + "</tbody></table>"
+        )
+    return "\n".join(parts)
+
+
 def build_dashboard(
     report: dict[str, Any],
     output_path: str | Path,
@@ -217,6 +278,7 @@ body {{ margin: 0; padding: 24px; background: #020617; color: #e2e8f0;
        font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
 h1 {{ margin: 0 0 4px; font-size: 26px; }}
 h2 {{ margin: 28px 0 10px; font-size: 17px; color: #bae6fd; }}
+h3 {{ margin: 18px 0 8px; font-size: 15px; color: #7dd3fc; }}
 .muted {{ color: #94a3b8; }}
 .banner {{ margin: 18px 0; padding: 14px 16px; border-radius: 10px; font-weight: 600; }}
 .banner.danger {{ background: #450a0a; border: 1px solid #dc2626; color: #fecaca; }}
@@ -259,6 +321,8 @@ at least 20 trading days have closed trades. Exposure is entry notional / initia
 
 <h2>Equity curve (closed trades)</h2>
 {_equity_svg(report)}
+
+{_walkforward_section(report)}
 
 <div class="two">
   <section>

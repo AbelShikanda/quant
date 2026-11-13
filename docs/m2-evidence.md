@@ -13,7 +13,7 @@ The `micro_100` profile is an explicit high-risk override, not a promotion candi
 Observed:
 
 ```text
-66 passed
+73 passed
 ```
 
 Key coverage:
@@ -31,6 +31,9 @@ Key coverage:
   refusal, micro-100 minimum-lot sizing, profile overlay immutability, Sharpe/Sortino/exposure
   metrics, and manifest change.
 - `tests/test_dashboard.py` — high-risk banner, read-only notice, saved-report rendering, and CLI.
+- `tests/test_walkforward.py` — rolling/expanding fold generation, non-overlapping test windows,
+  test-window-only trade records, chained final equity, deterministic baseline controls, and the
+  walk-forward CLI report/dashboard.
 - `tests/test_data_loaders.py` — FRED, ALFRED `realtime_start`, ALFRED-over-FRED precedence, CBOE
   GVZ, Treasury, COT, and H4 aggregation.
 - `tests/test_stress.py` — gap-through-stop fills at the gap open, gap-through-take-profit fills at
@@ -286,3 +289,80 @@ warning-labeled high-risk override.
 
 Remaining HUMAN_JUDGMENT items: the absent manual WGC/IMF XLSX (weight 0, not consumed by the
 overseer in v1) and human sign-off.
+
+## 11. Walk-forward and baseline controls
+
+```powershell
+.\.venv\Scripts\python.exe -m goldbot.cli walkforward `
+  --manifest config/scope.gold.v1.yaml `
+  --bars 1600 `
+  --train-bars 600 `
+  --test-bars 200 `
+  --random-runs 20 `
+  --show-folds
+```
+
+Observed:
+
+```text
+walk_forward: {"train_bars": 600, "test_bars": 200, "step_bars": 200, "mode": "rolling"}
+bars: M15=1600 H4=100
+initial_equity: 10000.00
+final_equity: 10466.26
+metrics: trade_count=10, win_rate=100.0%, max_drawdown=0.0%, total_return=4.66%
+baselines: buy_and_hold=5.68%, simple_trend=5.51%, random_mean=2.64%,
+           random_median=2.58%, random_p05=2.06%, random_p95=3.47%
+fold 0: test=2026-01-11T06:00Z..2026-01-13T08:00Z trades=0 return=0.00%
+fold 1: test=2026-01-13T08:00Z..2026-01-15T10:00Z trades=1 return=0.47%
+fold 2: test=2026-01-15T10:00Z..2026-01-17T12:00Z trades=3 return=1.39%
+fold 3: test=2026-01-17T12:00Z..2026-01-19T14:00Z trades=3 return=1.37%
+fold 4: test=2026-01-19T14:00Z..2026-01-21T16:00Z trades=3 return=1.35%
+```
+
+The aggregate final equity equals the last fold's final equity because equity is chained. Every
+recorded trade falls inside a test window; entries in the train window are suppressed with an explicit
+decision reason. The baseline controls are unlevered, cost-free, 1x-notional results over the same
+test windows. The synthetic fixture is not profitability evidence, and the train window is warm-up
+only; no parameter fitting is performed yet.
+
+### 11a. MT5 walk-forward, standard $1,000 profile
+
+```powershell
+.\.venv\Scripts\python.exe -m goldbot.cli walkforward `
+  --manifest config/scope.gold.v1.yaml `
+  --account-profile config/profiles/standard_1k.yaml `
+  --source mt5 `
+  --bars 1600 `
+  --context-bars 500 `
+  --train-bars 600 `
+  --test-bars 200 `
+  --equity 1000 `
+  --random-runs 20 `
+  --report reports/m2.walkforward.mt5.1000.json `
+  --dashboard reports/m2.walkforward.mt5.1000.html `
+  --show-folds
+```
+
+Observed:
+
+```text
+mt5 account: 106806652 FBS-Demo equity=1000.0
+bars: M15=1600 H4=500
+walk_forward: {"train_bars": 600, "test_bars": 200, "step_bars": 200, "mode": "rolling"}
+initial_equity: 1000.00
+final_equity: 1002.67
+metrics: trade_count=1, win_rate=100.0%, max_drawdown=0.0%, total_return=0.27%
+baselines: buy_and_hold=-3.32%, simple_trend=1.39%, random_mean=-2.10%,
+           random_median=-1.30%, random_p05=-5.76%, random_p95=1.32%
+fold 0: test=2026-10-29T12:45Z..2026-11-02T17:45Z trades=0
+fold 1: test=2026-11-02T17:45Z..2026-11-04T21:45Z trades=0
+fold 2: test=2026-11-04T21:45Z..2026-11-09T02:45Z trades=0
+fold 3: test=2026-11-09T02:45Z..2026-11-11T06:45Z trades=1 return=0.27%
+fold 4: test=2026-11-11T06:45Z..2026-11-13T10:45Z trades=0
+```
+
+The MT5 walk-forward uses the same 0.01 lot trade observed in the single-run MT5 evidence. The
+sample is short (about 16 days of M15 bars), so it is execution evidence, not a profitability result.
+The high-risk `micro_100` MT5 walk-forward uses the same trade and the same $2.67 PnL, but on $100
+equity it is a +2.67% result and remains not promotion-eligible; the dashboard shows the red override
+banner.

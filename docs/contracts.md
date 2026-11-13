@@ -251,6 +251,21 @@ marked `high_risk_override: true`, `promotion_eligible: false`, prints a warning
 banner on the dashboard. One normal stop is a double-digit account loss. The risk-preserving route
 for a $100 account is a micro-lot broker (0.001 lot or a 1 oz-per-lot contract), not this override.
 
+## Walk-forward and baseline controls
+
+`goldbot/walkforward.py` splits the execution series into non-overlapping test windows. Each fold has:
+
+- a train window used only as warm-up/context; entries are suppressed there,
+- a half-open test window `[test_start, test_end)` where entries are allowed,
+- chained equity: each fold starts at the previous fold's final equity,
+- per-fold metrics and an aggregate metric set built from all test trades and decisions.
+
+The train window is not used to fit parameters yet. It exists so the strategy has its normal lookback
+and so a future fit step can be added without changing the split contract. `goldbot/baselines.py`
+computes cost-free, unlevered, 1x-notional controls over the same test windows: buy-and-hold, a simple
+EMA trend control (50/200 by default), and random-entry mean/median/p05/p95. The controls are sanity
+checks, not strategy results; they do not model spread, commission, or slippage.
+
 ## M2 limitations
 
 - ALFRED `realtime_start` vintages and CBOE GVZ are wired into the loader; automated ALFRED
@@ -259,8 +274,9 @@ for a $100 account is a micro-lot broker (0.001 lot or a 1 oz-per-lot contract),
   are not yet wired.
 - The session-filter mechanism is implemented but disabled in the manifest until the owner confirms
   the session hours; news blackout is an explicit input flag.
-- Walk-forward/OOS splitting and baseline controls (buy-and-hold, simple trend, random entry) are
-  M3 work. Sharpe/Sortino/exposure reporting and gap/spread/missing/stale stress tests exist.
+- Walk-forward/OOS splitting and baseline controls are implemented, but the train window is warm-up
+  only; no parameter fitting or walk-forward optimization is performed yet. The baselines are
+  cost-free controls, not after-cost strategy comparisons.
 - The dashboard is a read-only static HTML renderer of a saved JSON report. It does not connect to
   MT5, place orders, or change scope. A live FastAPI dashboard is M3 work.
 - The demo backtest is a synthetic fixture, not evidence of real-world profitability.

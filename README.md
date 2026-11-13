@@ -86,6 +86,31 @@ entry count change without a code edit:
 The fixed interfaces are documented in `docs/contracts.md`. Verification commands and observed
 results are recorded in `docs/m2-evidence.md`.
 
+### Walk-forward and baseline controls
+
+The `walkforward` command splits the M15 series into non-overlapping test windows. Each fold uses the
+preceding bars as warm-up, suppresses entries outside the test window, and chains equity from the
+previous fold. The report includes per-fold metrics and cost-free baseline controls:
+
+```powershell
+.\.venv\Scripts\python.exe -m goldbot.cli walkforward `
+  --manifest config/scope.gold.v1.yaml `
+  --source synthetic `
+  --bars 1600 `
+  --train-bars 600 `
+  --test-bars 200 `
+  --mode rolling `
+  --random-runs 200 `
+  --report reports/m2.walkforward.json `
+  --dashboard reports/m2.walkforward.html `
+  --show-folds
+```
+
+The baselines are buy-and-hold, a simple EMA trend control (50/200 by default), and a random-entry
+distribution. They are unlevered, cost-free, 1x-notional controls over the same test windows; they are
+not strategy results and are not directly comparable to the strategy's after-cost PnL. The train
+window is warm-up only; no parameter fitting is performed yet.
+
 ### Account profiles: standard $1,000 and high-risk $100
 
 The base manifest uses the approved leveraged account model with a 5:1 bot notional cap. Select an
@@ -315,12 +340,16 @@ Implemented:
 - CBOE GVZ diagnostic ingestion,
 - session-filter mechanism (disabled by default pending owner confirmation of session hours),
 - Sharpe, Sortino, entry-notional, and exposure reporting; gap/spread/missing/stale stress tests,
+- walk-forward/out-of-sample splits with non-overlapping test windows, chained equity, and per-fold
+  metrics,
+- baseline controls (buy-and-hold, simple EMA trend, random-entry distribution) computed over the
+  same test windows,
 - explicit account-profile overlays for the standard $1,000 account and the high-risk $100 account,
 - read-only static HTML dashboard renderer for saved run reports.
 
 Evidence:
 
-- `python -m pytest -q` → **66 passed**.
+- `python -m pytest -q` → **73 passed**.
 - Synthetic run: 1,200 M15 bars, 75 H4 bars, 10,000 equity → 4 entries/trades, final equity
   10,186.72 on the current fixture.
 - Standard $1,000 MT5 run: 1 trade, `LONG 0.01 4114.26 -> 4116.94`, PnL `2.67`, trailing-stop
@@ -329,6 +358,17 @@ Evidence:
   exit; entry risk `9.37` = `9.3663%`, under the 11% micro-profile cap but a double-digit loss.
 - Manifest-parameter demo: baseline `entry_threshold=0.20` → 4 entries; changed
   `entry_threshold=0.99` → 0 entries, without a code edit.
+- Walk-forward synthetic run: 1,600 M15 bars, 600 train bars, 200 test bars, rolling mode → 5
+  non-overlapping folds, 10 test-window trades, final equity 10,466.26, max drawdown 0.00% on the
+  current fixture. Baseline controls over the same windows: buy-and-hold 5.68%, simple trend 5.51%,
+  random-entry mean 2.64% (20 runs). The fixture is still synthetic, not profitability evidence.
+- MT5 walk-forward, standard $1,000 profile: 1,600 M15 bars, 500 H4 bars, 5 folds, 1 test-window
+  trade, final equity 1,002.67 (+0.27%). Baselines: buy-and-hold -3.32%, simple trend +1.39%,
+  random-entry mean -2.10%. The sample is about 16 days; this is execution evidence, not a
+  profitability result.
+- Walk-forward tests: rolling/expanding folds are non-overlapping; all recorded trades fall inside a
+  test window; the aggregate final equity equals the last fold's final equity; baseline results are
+  deterministic for a fixed seed.
 - Point-in-time test: a revised `DFII10` print is invisible before its knowledge time.
 - Exit-precedence tests: fundamentals-only deterioration selects `thesis_invalidated` (80);
   technicals-only deterioration selects `technical_or_profit_trail` (50); risk selects
@@ -347,8 +387,9 @@ Evidence:
 
 Not yet implemented in M2: automated ALFRED download/replay, iShares IAU (deferred to v2 in the
 manifest), manual WGC/IMF XLSX strategy ingestion (still HUMAN_JUDGMENT and not consumed by the
-overseer), raw source snapshot hashing, walk-forward/OOS splits, and baseline controls. These remain
-M3 work. The session-filter mechanism exists but is disabled in the manifest until the owner
+overseer), and raw source snapshot hashing. These remain M3 work. Walk-forward/OOS splits and
+baseline controls are implemented, but the train window is warm-up only; no parameter fitting is
+performed yet. The session-filter mechanism exists but is disabled in the manifest until the owner
 confirms the session hours.
 
 ## Non-goals for M1/M2

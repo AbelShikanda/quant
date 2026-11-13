@@ -168,8 +168,8 @@ dashboard/wizard**. Do not skip ahead.
 - [x] Stop-first intrabar assumption.
 - [~] No lookahead; vintage macro data only. The point-in-time store and closed-bar windows enforce
   this; automated ALFRED vintage replay remains M3.
-- [ ] Walk-forward and out-of-sample splits.
-- [ ] Baseline comparison: buy-and-hold, simple trend, random-entry control.
+- [x] Walk-forward and out-of-sample splits.
+- [x] Baseline comparison: buy-and-hold, simple trend, random-entry control.
 - [x] Report drawdown, Sharpe, Sortino, hit rate, payoff, exposure, trade count. The report includes
   daily annualized Sharpe/Sortino (null until at least 20 trading days), entry notional, and
   entry-exposure percentages.
@@ -180,7 +180,7 @@ dashboard/wizard**. Do not skip ahead.
 
 ### M2 gate decision
 
-- [~] M2 core is runnable and tested (`66 passed`), but execution is not promoted. Remaining M2/M3
+- [~] M2 core is runnable and tested (`73 passed`), but execution is not promoted. Remaining M2/M3
   items above are explicit; do not treat the synthetic fixture as profitability evidence. The
   `micro_100` profile is a high-risk override, not a promotion candidate.
 
