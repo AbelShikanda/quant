@@ -48,7 +48,9 @@ The preflight still blocks for honest reasons:
   `DTWEXBGS` observation is `2026-11-06`, and the manifest's
   `stale_after_days.broad_usd` is `5`.
 - `broker_time_calibration`: the broker UTC offset is a human calibration item;
-  the manifest requires it before live execution.
+  the manifest requires it before live execution. The last tick was
+  `2026-11-13 23:54:59` server time; spot gold closes at `22:00 UTC`, which
+  implies a `UTC+2` server offset. This is an inference, not a confirmation.
 - `strategy_decision`: `NO_TRADE`; the fusion layer did not produce an entry
   candidate.
 
