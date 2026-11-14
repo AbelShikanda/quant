@@ -533,6 +533,12 @@ class MT5DataFeed:
             raise DataError("MT5DataFeed.connect() must be called first")
         return _mt5_record_to_dict(self._mt5.order_check(request))
 
+    def send_order(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Submit an order. Only the guarded demo-order path may call this."""
+        if self._mt5 is None:
+            raise DataError("MT5DataFeed.connect() must be called first")
+        return _mt5_record_to_dict(self._mt5.order_send(request))
+
     def close(self) -> None:
         if self._mt5 is not None:
             self._mt5.shutdown()

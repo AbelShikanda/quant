@@ -54,3 +54,19 @@ The preflight still blocks for honest reasons:
 
 No broker order was sent. There is no forced-trade path: a demo order must wait
 for a valid `ENTER_LONG` decision and a separately reviewed execution command.
+
+## Guarded demo order
+
+`goldbot demo-send` is the only command with an `order_send` path. It refuses to
+send unless **all** of these are present:
+
+- `--send`
+- `--confirm-order "SEND DEMO ORDER"`
+- `--confirm-broker-offset` with a human-calibrated `--broker-utc-offset-minutes`
+- `--expected-login` matching the connected demo account
+- a preflight where every item is `PASS` and the decision is `ENTER_LONG`
+- no existing ledger order with the same decision idempotency key
+
+It attaches the strategy stop and target to the market request, records the
+broker order/fill/position in SQLite, and reconciles the open position from MT5.
+The command has not been run with all guards, and no broker order has been sent.

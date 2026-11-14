@@ -20,7 +20,7 @@ from .data import (
     make_synthetic_bars,
     make_synthetic_macro_store,
 )
-from .demo import run_demo_preflight
+from .demo import run_demo_order, run_demo_preflight
 from .ledger import Ledger
 from .live_dashboard import serve_live_dashboard
 from .manifest import load_manifest, manifest_hash
@@ -399,6 +399,95 @@ def _cmd_demo_preflight(args: argparse.Namespace) -> int:
     return 0 if result.status != "FAIL" else 2
 
 
+def _cmd_demo_send(args: argparse.Namespace) -> int:
+    """Guarded one-shot demo order. Refuses unless every explicit guard is present."""
+    if not args.send:
+        print("refusing to send: --send is required", file=sys.stderr)
+        return 2
+    if args.confirm_order != "SEND DEMO ORDER":
+        print(
+            "refusing to send: --confirm-order must be exactly 'SEND DEMO ORDER'",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.confirm_broker_offset:
+        print(
+            "refusing to send: --confirm-broker-offset is required after human calibration",
+            file=sys.stderr,
+        )
+        return 2
+    if args.expected_login is None:
+        print("refusing to send: --expected-login is required", file=sys.stderr)
+        return 2
+    try:
+        manifest = _load_manifest_for_run(args)
+        result = run_demo_order(
+            manifest=manifest,
+            macro_dir=args.macro_dir,
+            ledger_path=args.ledger,
+            expected_login=args.expected_login,
+            broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+            broker_offset_confirmed=args.confirm_broker_offset,
+            send=args.send,
+            confirm_phrase=args.confirm_order,
+            bars=args.bars,
+            context_bars=args.context_bars,
+            deviation_points=args.deviation_points,
+            magic=args.magic,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI must report, not hide, the failure
+        print(f"demo order failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    payload = result.to_dict()
+    if args.report:
+        path = Path(args.report)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, default=str) + "\n",
+            encoding="utf-8",
+        )
+        print(f"wrote demo order report: {path}")
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+        return 0 if (result.sent or not result.preflight.send_ready) else 2
+
+    print("mode: demo_order")
+    print(f"status: {result.status}")
+    print(f"preflight_status: {result.preflight.status}")
+    print(f"sent: {result.sent}")
+    print(
+        f"account: {result.preflight.account.get('login')} "
+        f"{result.preflight.account.get('server')} "
+        f"equity={result.preflight.account.get('equity')}"
+    )
+    if result.preflight.decision is not None:
+        print(
+            f"decision: {result.preflight.decision.decision_type} "
+            f"as_of={result.preflight.decision.as_of_utc.isoformat()} "
+            f"score={result.preflight.decision.combined_score:+.3f}"
+        )
+    for item in result.preflight.items:
+        print(f"[{item.status}] {item.name}: {item.detail}")
+    if result.preflight.order_request is not None:
+        print(
+            "order_request: "
+            f"{json.dumps(result.preflight.order_request, ensure_ascii=False)}"
+        )
+    if result.send_result is not None:
+        print(
+            "send_result: "
+            f"retcode={result.send_result.get('retcode')!r} "
+            f"order={result.send_result.get('order')!r} "
+            f"deal={result.send_result.get('deal')!r} "
+            f"price={result.send_result.get('price')!r} "
+            f"volume={result.send_result.get('volume')!r} "
+            f"comment={result.send_result.get('comment')!r}"
+        )
+    print(f"ledger: {result.ledger_path}")
+    return 0 if (result.sent or not result.preflight.send_ready) else 2
+
+
 def _cmd_walkforward(args: argparse.Namespace) -> int:
     try:
         manifest, execution, context, macro_store = _build_run_inputs(args)
@@ -729,6 +818,68 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--report", help="write full JSON preflight report")
     preflight.add_argument("--json", action="store_true", help="print summary JSON")
     preflight.set_defaults(func=_cmd_demo_preflight)
+
+    order = subparsers.add_parser(
+        "demo-send",
+        help="guarded one-shot demo order; requires explicit send and confirmation",
+    )
+    order.add_argument("--manifest", required=True, help="path to scope YAML")
+    order.add_argument(
+        "--account-profile",
+        help="explicit account-profile YAML overlay, e.g. config/profiles/standard_1k.yaml",
+    )
+    order.add_argument(
+        "--macro-dir",
+        required=True,
+        help="local macro CSV/XLSX directory (real data required; synthetic is refused)",
+    )
+    order.add_argument(
+        "--ledger",
+        default="reports/demo.execution.ledger.sqlite",
+        help="SQLite ledger for the demo decision and broker order",
+    )
+    order.add_argument("--bars", type=int, default=1600, help="M15 bars to load")
+    order.add_argument(
+        "--context-bars", type=int, default=500, help="H4 bars to load from MT5"
+    )
+    order.add_argument(
+        "--broker-utc-offset-minutes",
+        type=int,
+        required=True,
+        help="human-calibrated broker server offset from UTC",
+    )
+    order.add_argument(
+        "--confirm-broker-offset",
+        action="store_true",
+        help="confirm the broker UTC offset is human-calibrated",
+    )
+    order.add_argument(
+        "--deviation-points",
+        type=int,
+        default=20,
+        help="max slippage/deviation for the market order",
+    )
+    order.add_argument(
+        "--magic", type=int, default=20261114, help="MT5 magic number for the bot"
+    )
+    order.add_argument(
+        "--expected-login",
+        type=int,
+        required=True,
+        help="required demo account login",
+    )
+    order.add_argument(
+        "--send",
+        action="store_true",
+        help="required explicit send switch; without it the command refuses",
+    )
+    order.add_argument(
+        "--confirm-order",
+        help="required confirmation phrase: SEND DEMO ORDER",
+    )
+    order.add_argument("--report", help="write full JSON demo-order report")
+    order.add_argument("--json", action="store_true", help="print summary JSON")
+    order.set_defaults(func=_cmd_demo_send)
 
     demo = subparsers.add_parser(
         "demo-param",

@@ -67,6 +67,11 @@ class DemoPreflightResult:
     def status(self) -> str:
         return _overall_status(self.items, self.decision)
 
+    @property
+    def send_ready(self) -> bool:
+        """True only when every item is PASS and the decision is ENTER_LONG."""
+        return self.status == PASS and all(item.status == PASS for item in self.items)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "mode": "demo_preflight",
@@ -87,6 +92,35 @@ class DemoPreflightResult:
             "order_check": self.order_check,
             "ledger_path": self.ledger_path,
             "broker_orders_sent": 0,
+        }
+
+
+@dataclass
+class DemoOrderResult:
+    preflight: DemoPreflightResult
+    send_requested: bool
+    sent: bool
+    send_result: dict[str, Any] | None
+    ledger_path: str | None
+
+    @property
+    def status(self) -> str:
+        if not self.send_requested:
+            return self.preflight.status
+        if not self.sent:
+            return self.preflight.status
+        return "SENT"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": "demo_order",
+            "status": self.status,
+            "send_requested": self.send_requested,
+            "sent": self.sent,
+            "send_result": self.send_result,
+            "preflight": self.preflight.to_dict(),
+            "ledger_path": self.ledger_path,
+            "broker_orders_sent": 1 if self.sent else 0,
         }
 
 
@@ -201,12 +235,13 @@ def run_demo_preflight(
     deviation_points: int = 20,
     magic: int = 20261114,
     expected_login: int | None = None,
+    broker_offset_confirmed: bool = False,
     feed: MT5DataFeed | None = None,
 ) -> DemoPreflightResult:
     """Run a read-only demo preflight and persist the decision when asked.
 
     ``order_check`` is called only when the strategy returns ``ENTER_LONG``.
-    ``order_send`` is never called by this module.
+    ``order_send`` is never called by this function.
     """
     generated_at = utc_now()
     scope_id = str(manifest.get("scope_id", "unknown"))
@@ -410,10 +445,16 @@ def run_demo_preflight(
         _add(
             items,
             "broker_time_calibration",
-            HUMAN_JUDGMENT,
-            "broker UTC offset is a human calibration item; the manifest requires it "
-            "before live execution, and no offset is recorded in the manifest.",
+            PASS if broker_offset_confirmed else HUMAN_JUDGMENT,
+            (
+                f"human confirmed broker UTC offset {broker_utc_offset_minutes} minutes"
+                if broker_offset_confirmed
+                else "broker UTC offset is a human calibration item; the manifest "
+                "requires it before live execution, and no offset is recorded in the "
+                "manifest."
+            ),
             broker_utc_offset_minutes=broker_utc_offset_minutes,
+            human_confirmed=broker_offset_confirmed,
         )
 
         positions = active_feed.positions()
@@ -667,6 +708,223 @@ def run_demo_preflight(
         order_check=order_check,
         ledger_path=str(ledger_path) if ledger_path else None,
     )
+
+
+def run_demo_order(
+    *,
+    manifest: dict[str, Any],
+    macro_dir: str | Path,
+    ledger_path: str | Path,
+    expected_login: int,
+    broker_utc_offset_minutes: int,
+    broker_offset_confirmed: bool,
+    send: bool,
+    confirm_phrase: str | None,
+    bars: int = 1600,
+    context_bars: int = 500,
+    deviation_points: int = 20,
+    magic: int = 20261114,
+    feed: MT5DataFeed | None = None,
+) -> DemoOrderResult:
+    """Run preflight and, only with explicit guards, submit one demo order.
+
+    The order is never sent unless all of the following are true:
+
+    - ``send`` is true,
+    - ``confirm_phrase`` is exactly ``SEND DEMO ORDER``,
+    - the broker UTC offset has been human-confirmed,
+    - the expected demo login was supplied,
+    - every preflight item is ``PASS`` and the decision is ``ENTER_LONG``,
+    - no order with the same decision idempotency key is already recorded.
+    """
+    if not send:
+        raise ValueError("refusing to send: explicit send=True (--send) is required")
+    if confirm_phrase != "SEND DEMO ORDER":
+        raise ValueError(
+            "refusing to send: --confirm-order must be exactly 'SEND DEMO ORDER'"
+        )
+    if expected_login is None:
+        raise ValueError("refusing to send: --expected-login is required")
+    if not broker_offset_confirmed:
+        raise ValueError(
+            "refusing to send: --confirm-broker-offset is required after human calibration"
+        )
+
+    active_feed = feed or MT5DataFeed(
+        symbol=str(as_dict(manifest.get("market")).get("symbol", "XAUUSD")),
+        broker_utc_offset_minutes=broker_utc_offset_minutes,
+    )
+    owns_feed = feed is None
+    ledger_text = str(ledger_path)
+    try:
+        preflight = run_demo_preflight(
+            manifest=manifest,
+            macro_dir=macro_dir,
+            ledger_path=ledger_path,
+            bars=bars,
+            context_bars=context_bars,
+            broker_utc_offset_minutes=broker_utc_offset_minutes,
+            deviation_points=deviation_points,
+            magic=magic,
+            expected_login=expected_login,
+            broker_offset_confirmed=broker_offset_confirmed,
+            feed=active_feed,
+        )
+        if not preflight.send_ready:
+            return DemoOrderResult(
+                preflight=preflight,
+                send_requested=True,
+                sent=False,
+                send_result=None,
+                ledger_path=ledger_text,
+            )
+        decision = preflight.decision
+        request = preflight.order_request
+        if decision is None or request is None:
+            raise RuntimeError("preflight is send-ready but has no decision/order request")
+
+        idempotency_key = f"{decision.decision_id}:ENTRY"
+        order_id = f"broker-order-{decision.decision_id}"
+        request = dict(request)
+        request["comment"] = "goldbot demo standard_1k"
+        with Ledger(ledger_path) as ledger:
+            existing = ledger.connection.execute(
+                """
+                SELECT order_id, state FROM orders
+                WHERE idempotency_key = ?
+                LIMIT 1
+                """,
+                (idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                return DemoOrderResult(
+                    preflight=preflight,
+                    send_requested=True,
+                    sent=False,
+                    send_result={
+                        "status": "ALREADY_RECORDED",
+                        "order_id": existing["order_id"],
+                        "state": existing["state"],
+                    },
+                    ledger_path=ledger_text,
+                )
+
+            submitted_at = utc_now()
+            send_result = active_feed.send_order(request)
+            retcode = int(send_result.get("retcode", -1))
+            success = retcode in {10008, 10009}
+            broker_order_ticket = send_result.get("order")
+            ledger.record_order(
+                order_id=order_id,
+                decision_id=decision.decision_id,
+                submitted_at_utc=submitted_at,
+                symbol=str(request["symbol"]),
+                side="LONG",
+                order_type="MARKET",
+                volume=float(request["volume"]),
+                price=float(request["price"]),
+                stop_loss=float(request["sl"]),
+                take_profit=float(request["tp"]),
+                state="FILLED" if success else "REJECTED",
+                idempotency_key=idempotency_key,
+                raw_request=request,
+                raw_response=send_result,
+                deviation_points=int(request["deviation"]),
+                magic=int(request["magic"]),
+                comment=str(request["comment"]),
+                broker_order_ticket=(
+                    int(broker_order_ticket) if broker_order_ticket else None
+                ),
+            )
+            if success:
+                deal_ticket = send_result.get("deal")
+                fill_price = float(
+                    send_result.get("price") or request["price"]
+                )
+                fill_volume = float(
+                    send_result.get("volume") or request["volume"]
+                )
+                ledger.record_fill(
+                    fill_id=f"broker-fill-{deal_ticket or decision.decision_id}",
+                    order_id=order_id,
+                    filled_at_utc=submitted_at,
+                    symbol=str(request["symbol"]),
+                    side="LONG",
+                    volume=fill_volume,
+                    price=fill_price,
+                    commission=0.0,
+                    swap=0.0,
+                    slippage_points=None,
+                    broker_deal_ticket=int(deal_ticket) if deal_ticket else None,
+                    raw_deal=send_result,
+                )
+                positions = active_feed.positions()
+                if positions:
+                    position = positions[-1]
+                    ticket = position.get("ticket")
+                    open_time = (
+                        _mt5_time_to_utc(
+                            position.get("time"), broker_utc_offset_minutes
+                        )
+                        or submitted_at
+                    )
+                    ledger.record_position(
+                        position_id=(
+                            f"broker-position-{ticket or decision.decision_id}"
+                        ),
+                        symbol=str(request["symbol"]),
+                        side="LONG",
+                        volume=float(position.get("volume") or fill_volume),
+                        open_price=float(
+                            position.get("price_open")
+                            or fill_price
+                            or request["price"]
+                        ),
+                        open_time_utc=open_time,
+                        stop_loss=(
+                            float(position["sl"])
+                            if position.get("sl")
+                            else float(request["sl"])
+                        ),
+                        take_profit=(
+                            float(position["tp"])
+                            if position.get("tp")
+                            else float(request["tp"])
+                        ),
+                        broker_position_ticket=(
+                            int(ticket) if ticket else None
+                        ),
+                        state="DEMO_OPEN",
+                        raw_position=position,
+                    )
+            ledger.log_event(
+                level="INFO" if success else "ERROR",
+                component="demo_order",
+                event_type="demo_order_sent" if success else "demo_order_rejected",
+                message=(
+                    "demo order accepted by MT5"
+                    if success
+                    else f"demo order rejected: retcode={retcode}"
+                ),
+                correlation_id=decision.decision_id,
+                payload={
+                    "request": request,
+                    "response": send_result,
+                    "success": success,
+                    "broker_orders_sent": 1,
+                },
+                logged_at_utc=submitted_at,
+            )
+            return DemoOrderResult(
+                preflight=preflight,
+                send_requested=True,
+                sent=success,
+                send_result=send_result,
+                ledger_path=ledger_text,
+            )
+    finally:
+        if owns_feed:
+            active_feed.close()
 
 
 def _persist_preflight(

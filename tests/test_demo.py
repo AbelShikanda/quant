@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from goldbot.contracts import (
     FundamentalView,
@@ -11,12 +14,15 @@ from goldbot.contracts import (
 )
 from goldbot.data import BarSeries, make_synthetic_bars
 from goldbot.demo import (
+    NO_TRADE,
     PASS,
     _choose_filling,
     _latest_closed_bar,
     _order_request,
+    run_demo_order,
     run_demo_preflight,
 )
+from goldbot.ledger import Ledger
 from goldbot.profiles import load_manifest_with_profile
 
 
@@ -26,6 +32,8 @@ class FakeFeed:
         self.bars = bars
         self.h4 = h4
         self.order_checks: list[dict] = []
+        self.send_requests: list[dict] = []
+        self.open_positions: list[dict] = []
         self.closed = False
 
     def connect(self):
@@ -67,7 +75,7 @@ class FakeFeed:
         }
 
     def positions(self):
-        return []
+        return list(self.open_positions)
 
     def orders(self):
         return []
@@ -78,6 +86,28 @@ class FakeFeed:
     def check_order(self, request: dict):
         self.order_checks.append(request)
         return {"retcode": 0, "comment": "Done", "margin": 100.0}
+
+    def send_order(self, request: dict):
+        self.send_requests.append(request)
+        self.open_positions.append(
+            {
+                "ticket": 333,
+                "volume": request["volume"],
+                "price_open": request["price"],
+                "sl": request["sl"],
+                "tp": request["tp"],
+                "time": int(self.now.timestamp()),
+                "type": 0,
+            }
+        )
+        return {
+            "retcode": 10009,
+            "order": 111,
+            "deal": 222,
+            "price": request["price"],
+            "volume": request["volume"],
+            "comment": "Done",
+        }
 
     def close(self):
         self.closed = True
@@ -185,6 +215,136 @@ def test_latest_closed_bar_drops_a_forming_bar() -> None:
     latest = _latest_closed_bar(series, tick=tick, broker_utc_offset_minutes=0)
     assert latest is not None
     assert latest.time_utc == bars[-2].time_utc
+
+
+def _fake_no_trade_decision(as_of: datetime) -> StrategyDecision:
+    return replace(
+        _fake_decision(as_of),
+        decision_type="NO_TRADE",
+        side="NONE",
+        position_size=None,
+        stop_loss=None,
+        take_profit=None,
+        reasons=["no entry"],
+    )
+
+
+def _fake_preflight_inputs(monkeypatch, decision: StrategyDecision):
+    start = datetime(2026, 1, 5, tzinfo=timezone.utc)
+    m15 = make_synthetic_bars(start_utc=start, count=600)
+    h4 = make_synthetic_bars(start_utc=start, count=500)
+    now = datetime.now(timezone.utc)
+    feed = FakeFeed(now=now, bars=m15, h4=h4)
+    manifest = load_manifest_with_profile(
+        "config/scope.gold.v1.yaml",
+        "config/profiles/standard_1k.yaml",
+    )
+
+    class FakeStrategy:
+        def __init__(self, _manifest):
+            pass
+
+        def decide(self, **_kwargs):
+            return decision
+
+    monkeypatch.setattr("goldbot.demo.StrategyEngine", FakeStrategy)
+    monkeypatch.setattr("goldbot.demo.load_macro_directory", lambda _path: object())
+    return manifest, feed
+
+
+def test_demo_order_requires_explicit_guards() -> None:
+    base = dict(
+        manifest={},
+        macro_dir="unused",
+        ledger_path="unused",
+        expected_login=123,
+        broker_utc_offset_minutes=0,
+        broker_offset_confirmed=True,
+        send=False,
+        confirm_phrase="SEND DEMO ORDER",
+    )
+    with pytest.raises(ValueError, match="--send"):
+        run_demo_order(**base)
+    base["send"] = True
+    base["confirm_phrase"] = None
+    with pytest.raises(ValueError, match="confirm-order"):
+        run_demo_order(**base)
+    base["confirm_phrase"] = "SEND DEMO ORDER"
+    base["broker_offset_confirmed"] = False
+    with pytest.raises(ValueError, match="confirm-broker-offset"):
+        run_demo_order(**base)
+
+
+def test_demo_order_does_not_send_when_preflight_not_ready(
+    monkeypatch, tmp_path
+) -> None:
+    as_of = datetime(2026, 1, 11, 6, 0, tzinfo=timezone.utc)
+    decision = _fake_no_trade_decision(as_of)
+    manifest, feed = _fake_preflight_inputs(monkeypatch, decision)
+    ledger_path = tmp_path / "demo.sqlite"
+
+    result = run_demo_order(
+        manifest=manifest,
+        macro_dir="unused",
+        ledger_path=ledger_path,
+        expected_login=123,
+        broker_utc_offset_minutes=0,
+        broker_offset_confirmed=True,
+        send=True,
+        confirm_phrase="SEND DEMO ORDER",
+        bars=600,
+        context_bars=500,
+        feed=feed,
+    )
+
+    assert result.sent is False
+    assert result.preflight.status == NO_TRADE
+    assert result.send_result is None
+    assert feed.send_requests == []
+    assert not hasattr(feed, "order_send")
+
+
+def test_demo_order_sends_only_after_a_clean_preflight(monkeypatch, tmp_path) -> None:
+    as_of = datetime(2026, 1, 11, 6, 0, tzinfo=timezone.utc)
+    decision = _fake_decision(as_of)
+    manifest, feed = _fake_preflight_inputs(monkeypatch, decision)
+    ledger_path = tmp_path / "demo.sqlite"
+
+    result = run_demo_order(
+        manifest=manifest,
+        macro_dir="unused",
+        ledger_path=ledger_path,
+        expected_login=123,
+        broker_utc_offset_minutes=0,
+        broker_offset_confirmed=True,
+        send=True,
+        confirm_phrase="SEND DEMO ORDER",
+        bars=600,
+        context_bars=500,
+        feed=feed,
+    )
+
+    assert result.sent is True
+    assert result.preflight.send_ready is True
+    assert len(feed.send_requests) == 1
+    assert feed.send_requests[0]["comment"] == "goldbot demo standard_1k"
+    assert not hasattr(feed, "order_send")
+
+    with Ledger(ledger_path) as ledger:
+        order = ledger.connection.execute(
+            "SELECT state, broker_order_ticket FROM orders"
+        ).fetchone()
+        fill = ledger.connection.execute(
+            "SELECT broker_deal_ticket FROM fills"
+        ).fetchone()
+        position = ledger.connection.execute(
+            "SELECT state, broker_position_ticket FROM positions"
+        ).fetchone()
+    assert order["state"] == "FILLED"
+    assert order["broker_order_ticket"] == 111
+    assert fill["broker_deal_ticket"] == 222
+    assert position["state"] == "DEMO_OPEN"
+    assert position["broker_position_ticket"] == 333
 
 
 def test_preflight_calls_order_check_but_never_sends(monkeypatch) -> None:
