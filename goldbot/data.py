@@ -35,6 +35,27 @@ class DataError(RuntimeError):
     """Raised when a data source cannot be read."""
 
 
+def _mt5_to_plain(value: Any) -> Any:
+    """Convert MT5 named tuples (and nested containers) to plain Python values."""
+    if value is None:
+        return None
+    if hasattr(value, "_asdict"):
+        return {
+            key: _mt5_to_plain(item)
+            for key, item in value._asdict().items()
+        }
+    if isinstance(value, dict):
+        return {key: _mt5_to_plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_mt5_to_plain(item) for item in value]
+    return value
+
+
+def _mt5_record_to_dict(value: Any) -> dict[str, Any]:
+    converted = _mt5_to_plain(value)
+    return converted if isinstance(converted, dict) else {}
+
+
 class BarSeries:
     """A sorted OHLCV series with point-in-time windows."""
 
@@ -477,14 +498,40 @@ class MT5DataFeed:
     def account_info(self) -> dict[str, Any]:
         if self._mt5 is None:
             raise DataError("MT5DataFeed.connect() must be called first")
-        account = self._mt5.account_info()
-        return account._asdict() if account else {}
+        return _mt5_record_to_dict(self._mt5.account_info())
+
+    def terminal_info(self) -> dict[str, Any]:
+        if self._mt5 is None:
+            raise DataError("MT5DataFeed.connect() must be called first")
+        return _mt5_record_to_dict(self._mt5.terminal_info())
 
     def symbol_info(self) -> dict[str, Any]:
         if self._mt5 is None:
             raise DataError("MT5DataFeed.connect() must be called first")
-        symbol = self._mt5.symbol_info(self.symbol)
-        return symbol._asdict() if symbol else {}
+        return _mt5_record_to_dict(self._mt5.symbol_info(self.symbol))
+
+    def symbol_tick(self) -> dict[str, Any]:
+        if self._mt5 is None:
+            raise DataError("MT5DataFeed.connect() must be called first")
+        return _mt5_record_to_dict(self._mt5.symbol_info_tick(self.symbol))
+
+    def positions(self) -> list[dict[str, Any]]:
+        if self._mt5 is None:
+            raise DataError("MT5DataFeed.connect() must be called first")
+        raw = self._mt5.positions_get(symbol=self.symbol)
+        return [_mt5_record_to_dict(item) for item in (raw or [])]
+
+    def orders(self) -> list[dict[str, Any]]:
+        if self._mt5 is None:
+            raise DataError("MT5DataFeed.connect() must be called first")
+        raw = self._mt5.orders_get(symbol=self.symbol)
+        return [_mt5_record_to_dict(item) for item in (raw or [])]
+
+    def check_order(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Run MT5's order check without submitting anything."""
+        if self._mt5 is None:
+            raise DataError("MT5DataFeed.connect() must be called first")
+        return _mt5_record_to_dict(self._mt5.order_check(request))
 
     def close(self) -> None:
         if self._mt5 is not None:
@@ -747,7 +794,17 @@ def load_gld_xlsx(
             if isinstance(raw_date, datetime):
                 observation_date = raw_date.date()
             else:
-                observation_date = datetime.strptime(str(raw_date), "%d-%b-%Y").date()
+                try:
+                    observation_date = datetime.strptime(str(raw_date), "%d-%b-%Y").date()
+                except ValueError:
+                    continue
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError):
+                # The SPDR archive uses non-numeric placeholders such as
+                # "US Holiday" on market holidays.  They are not observations;
+                # skip them rather than forward-filling a prior value.
+                continue
             observations.append(
                 MacroObservation(
                     series_id=series_id,
@@ -755,7 +812,7 @@ def load_gld_xlsx(
                         observation_date + timedelta(days=1), time(0, 0), tzinfo=timezone.utc
                     ),
                     observation_date=observation_date,
-                    value=float(raw_value),
+                    value=value,
                     source_id=source_id,
                 )
             )

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+from openpyxl import Workbook
+
 from goldbot.data import (
     aggregate_bars,
     load_cot_csv,
     load_fred_csv,
+    load_gld_xlsx,
     load_gvz_csv,
     load_macro_directory,
     load_treasury_real_yield_csv,
@@ -76,6 +79,25 @@ def test_cot_csv_filters_gold_contract_and_computes_net() -> None:
     assert len(observations) == 1
     assert observations[0].value == 50000.0
     assert observations[0].knowledge_time_utc == datetime(2026, 1, 9, 20, 30, tzinfo=timezone.utc)
+
+
+def test_gld_xlsx_skips_holiday_placeholder_rows(tmp_path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "US GLD Historical Archive"
+    sheet.append(["Date", "Closing Price", "Total Ounces of Gold in the Trust", "Tonnes of Gold"])
+    sheet.append([datetime(2026, 1, 2), 250.0, 27_000_000, 850.0])
+    sheet.append([datetime(2026, 1, 5), "US Holiday", "US Holiday", "US Holiday"])
+    sheet.append([datetime(2026, 1, 6), 251.0, 27_100_000, 851.0])
+    path = tmp_path / "GLD.xlsx"
+    workbook.save(path)
+    workbook.close()
+
+    observations = load_gld_xlsx(path)
+    assert len(observations) == 2
+    assert observations[0].value == 850.0
+    assert observations[1].value == 851.0
+    assert observations[1].observation_date == date(2026, 1, 6)
 
 
 def test_gvz_csv_loads_diagnostic_series() -> None:

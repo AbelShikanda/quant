@@ -20,6 +20,7 @@ from .data import (
     make_synthetic_bars,
     make_synthetic_macro_store,
 )
+from .demo import run_demo_preflight
 from .ledger import Ledger
 from .live_dashboard import serve_live_dashboard
 from .manifest import load_manifest, manifest_hash
@@ -325,6 +326,79 @@ def _cmd_paper(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_demo_preflight(args: argparse.Namespace) -> int:
+    """Read-only demo-account preflight; never calls order_send."""
+    try:
+        manifest = _load_manifest_for_run(args)
+        result = run_demo_preflight(
+            manifest=manifest,
+            macro_dir=args.macro_dir,
+            ledger_path=args.ledger,
+            bars=args.bars,
+            context_bars=args.context_bars,
+            broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+            deviation_points=args.deviation_points,
+            magic=args.magic,
+            expected_login=args.expected_login,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI must report, not hide, the failure
+        print(f"demo preflight failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    payload = result.to_dict()
+    if args.report:
+        path = Path(args.report)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, default=str) + "\n",
+            encoding="utf-8",
+        )
+        print(f"wrote demo preflight report: {path}")
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+        return 0 if result.status != "FAIL" else 2
+
+    print("mode: demo_preflight (no broker orders were sent)")
+    print(f"status: {result.status}")
+    print(
+        f"account: {result.account.get('login')} {result.account.get('server')} "
+        f"equity={result.account.get('equity')} "
+        f"trade_mode={result.account.get('trade_mode')}"
+    )
+    print(
+        "terminal: "
+        f"connected={result.terminal.get('connected')} "
+        f"trade_allowed={result.terminal.get('trade_allowed')} "
+        f"tradeapi_disabled={result.terminal.get('tradeapi_disabled')}"
+    )
+    print(
+        f"symbol: {result.symbol.get('name')} "
+        f"trade_mode={result.symbol.get('trade_mode')} "
+        f"volume_min={result.symbol.get('volume_min')} "
+        f"filling_mode={result.symbol.get('filling_mode')}"
+    )
+    if result.decision is not None:
+        print(
+            f"decision: {result.decision.decision_type} "
+            f"as_of={result.decision.as_of_utc.isoformat()} "
+            f"score={result.decision.combined_score:+.3f}"
+        )
+        print(f"reasons: {result.decision.reasons}")
+    for item in result.items:
+        print(f"[{item.status}] {item.name}: {item.detail}")
+    if result.order_request is not None:
+        print(f"order_request: {json.dumps(result.order_request, ensure_ascii=False)}")
+    if result.order_check is not None:
+        print(
+            "order_check: "
+            f"retcode={result.order_check.get('retcode')!r} "
+            f"comment={result.order_check.get('comment')!r} "
+            f"margin={result.order_check.get('margin')!r}"
+        )
+    print(f"ledger: {result.ledger_path}")
+    return 0 if result.status != "FAIL" else 2
+
+
 def _cmd_walkforward(args: argparse.Namespace) -> int:
     try:
         manifest, execution, context, macro_store = _build_run_inputs(args)
@@ -608,6 +682,53 @@ def build_parser() -> argparse.ArgumentParser:
     wf.add_argument("--show-folds", action="store_true", help="print one line per fold")
     wf.add_argument("--json", action="store_true", help="print summary JSON")
     wf.set_defaults(func=_cmd_walkforward)
+
+    preflight = subparsers.add_parser(
+        "demo-preflight",
+        help="read-only demo-account preflight; never submits an order",
+    )
+    preflight.add_argument("--manifest", required=True, help="path to scope YAML")
+    preflight.add_argument(
+        "--account-profile",
+        help="explicit account-profile YAML overlay, e.g. config/profiles/standard_1k.yaml",
+    )
+    preflight.add_argument(
+        "--macro-dir",
+        required=True,
+        help="local macro CSV/XLSX directory (real data required; synthetic is refused)",
+    )
+    preflight.add_argument(
+        "--ledger",
+        default="reports/demo.preflight.ledger.sqlite",
+        help="SQLite ledger for the preflight decision",
+    )
+    preflight.add_argument("--bars", type=int, default=1600, help="M15 bars to load")
+    preflight.add_argument(
+        "--context-bars", type=int, default=500, help="H4 bars to load from MT5"
+    )
+    preflight.add_argument(
+        "--broker-utc-offset-minutes",
+        type=int,
+        default=0,
+        help="broker server offset from UTC; calibration is a human item",
+    )
+    preflight.add_argument(
+        "--deviation-points",
+        type=int,
+        default=20,
+        help="max slippage/deviation for the would-be market order",
+    )
+    preflight.add_argument(
+        "--magic", type=int, default=20261114, help="MT5 magic number for the bot"
+    )
+    preflight.add_argument(
+        "--expected-login",
+        type=int,
+        help="refuse if the connected MT5 account login differs",
+    )
+    preflight.add_argument("--report", help="write full JSON preflight report")
+    preflight.add_argument("--json", action="store_true", help="print summary JSON")
+    preflight.set_defaults(func=_cmd_demo_preflight)
 
     demo = subparsers.add_parser(
         "demo-param",

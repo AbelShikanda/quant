@@ -1,0 +1,741 @@
+"""Demo-account preflight.
+
+This module is deliberately a *preflight only*: it never calls ``order_send``.
+It checks the MT5 terminal/account/symbol, loads real macro files, asks the
+strategy for the latest closed-bar decision, and runs ``order_check`` on the
+would-be request.  A later, separately-reviewed command can submit an order
+only after this preflight is clean and the human owner explicitly asks for it.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from .contracts import RiskState, StrategyDecision, ensure_utc, utc_now
+from .data import BarSeries, MT5DataFeed, load_macro_directory
+from .ledger import Ledger
+from .manifest import as_dict, manifest_hash
+from .strategy import StrategyEngine
+
+
+PASS = "PASS"
+FAIL = "FAIL"
+BLOCKED = "BLOCKED"
+NO_TRADE = "NO_TRADE"
+HUMAN_JUDGMENT = "HUMAN_JUDGMENT"
+
+
+@dataclass
+class PreflightItem:
+    name: str
+    status: str
+    detail: str
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "status": self.status,
+            "detail": self.detail,
+            "evidence": self.evidence,
+        }
+
+
+@dataclass
+class DemoPreflightResult:
+    generated_at_utc: datetime
+    manifest_hash: str
+    scope_id: str
+    account_profile: str
+    high_risk_override: bool
+    promotion_eligible: bool
+    account: dict[str, Any]
+    terminal: dict[str, Any]
+    symbol: dict[str, Any]
+    tick: dict[str, Any]
+    items: list[PreflightItem]
+    decision: StrategyDecision | None
+    order_request: dict[str, Any] | None
+    order_check: dict[str, Any] | None
+    ledger_path: str | None
+
+    @property
+    def status(self) -> str:
+        return _overall_status(self.items, self.decision)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": "demo_preflight",
+            "generated_at_utc": self.generated_at_utc.isoformat(),
+            "manifest_hash": self.manifest_hash,
+            "scope_id": self.scope_id,
+            "account_profile": self.account_profile,
+            "high_risk_override": self.high_risk_override,
+            "promotion_eligible": self.promotion_eligible,
+            "status": self.status,
+            "account": self.account,
+            "terminal": self.terminal,
+            "symbol": self.symbol,
+            "tick": self.tick,
+            "items": [item.to_dict() for item in self.items],
+            "decision": self.decision.to_dict() if self.decision else None,
+            "order_request": self.order_request,
+            "order_check": self.order_check,
+            "ledger_path": self.ledger_path,
+            "broker_orders_sent": 0,
+        }
+
+
+def _overall_status(
+    items: list[PreflightItem], decision: StrategyDecision | None
+) -> str:
+    if any(item.status == FAIL for item in items):
+        return FAIL
+    if any(item.status == BLOCKED for item in items):
+        return BLOCKED
+    if decision is None or decision.decision_type != "ENTER_LONG":
+        return NO_TRADE
+    return PASS
+
+
+def _add(
+    items: list[PreflightItem],
+    name: str,
+    status: str,
+    detail: str,
+    **evidence: Any,
+) -> None:
+    items.append(
+        PreflightItem(
+            name=name,
+            status=status,
+            detail=detail,
+            evidence={key: value for key, value in evidence.items() if value is not None},
+        )
+    )
+
+
+def _mt5_time_to_utc(epoch_seconds: Any, broker_utc_offset_minutes: int) -> datetime | None:
+    if epoch_seconds is None:
+        return None
+    try:
+        raw = datetime.fromtimestamp(int(epoch_seconds), tz=timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return None
+    return raw - timedelta(minutes=broker_utc_offset_minutes)
+
+
+def _latest_closed_bar(
+    execution_bars: BarSeries,
+    *,
+    tick: dict[str, Any],
+    broker_utc_offset_minutes: int,
+    execution_minutes: int = 15,
+    tolerance_seconds: int = 60,
+) -> Any | None:
+    """Return the last completed M15 bar, dropping the forming bar if present."""
+    bars = execution_bars.bars
+    if not bars:
+        return None
+    last = bars[-1]
+    tick_time = _mt5_time_to_utc(tick.get("time"), broker_utc_offset_minutes)
+    if tick_time is None:
+        return last
+    if last.time_utc + timedelta(minutes=execution_minutes) > tick_time + timedelta(
+        seconds=tolerance_seconds
+    ):
+        return bars[-2] if len(bars) >= 2 else None
+    return last
+
+
+def _choose_filling(filling_mode: int) -> tuple[int, str]:
+    """Map the symbol filling bitmask to an MT5 ORDER_FILLING_* value."""
+    if filling_mode & 2:
+        return 1, "IOC"
+    if filling_mode & 1:
+        return 0, "FOK"
+    return 2, "RETURN"
+
+
+def _order_request(
+    *,
+    symbol: str,
+    volume: float,
+    price: float,
+    stop_loss: float,
+    take_profit: float,
+    deviation_points: int,
+    magic: int,
+    comment: str,
+    filling_mode: int,
+) -> dict[str, Any]:
+    filling, _ = _choose_filling(filling_mode)
+    return {
+        "action": 1,  # TRADE_ACTION_DEAL
+        "symbol": symbol,
+        "volume": float(volume),
+        "type": 0,  # ORDER_TYPE_BUY
+        "price": float(price),
+        "sl": float(stop_loss),
+        "tp": float(take_profit),
+        "deviation": int(deviation_points),
+        "magic": int(magic),
+        "comment": comment,
+        "type_time": 0,  # ORDER_TIME_GTC
+        "type_filling": filling,
+    }
+
+
+def run_demo_preflight(
+    *,
+    manifest: dict[str, Any],
+    macro_dir: str | Path,
+    ledger_path: str | Path | None = None,
+    bars: int = 1600,
+    context_bars: int = 500,
+    broker_utc_offset_minutes: int = 0,
+    deviation_points: int = 20,
+    magic: int = 20261114,
+    expected_login: int | None = None,
+    feed: MT5DataFeed | None = None,
+) -> DemoPreflightResult:
+    """Run a read-only demo preflight and persist the decision when asked.
+
+    ``order_check`` is called only when the strategy returns ``ENTER_LONG``.
+    ``order_send`` is never called by this module.
+    """
+    generated_at = utc_now()
+    scope_id = str(manifest.get("scope_id", "unknown"))
+    profile = str(manifest.get("active_account_profile", "base"))
+    high_risk = bool(manifest.get("profile_high_risk_override", False))
+    promotion_eligible = bool(manifest.get("profile_promotion_eligible", True))
+    digest = manifest_hash(manifest)
+    market = as_dict(manifest.get("market"))
+    symbol_name = str(market.get("symbol", "XAUUSD"))
+    execution_bar = str(market.get("execution_bar", "M15"))
+    context_bar = str(market.get("context_bar", "H4"))
+    execution_minutes = 15 if execution_bar.upper() == "M15" else 60
+    items: list[PreflightItem] = []
+    account: dict[str, Any] = {}
+    terminal: dict[str, Any] = {}
+    symbol: dict[str, Any] = {}
+    tick: dict[str, Any] = {}
+    decision: StrategyDecision | None = None
+    order_request: dict[str, Any] | None = None
+    order_check: dict[str, Any] | None = None
+
+    active_feed = feed or MT5DataFeed(
+        symbol=symbol_name,
+        broker_utc_offset_minutes=broker_utc_offset_minutes,
+    )
+    owns_feed = feed is None
+    try:
+        try:
+            active_feed.connect()
+        except Exception as exc:  # noqa: BLE001 - preflight must report the blocker
+            _add(items, "mt5_initialize", BLOCKED, f"MT5 initialize failed: {exc}")
+            return DemoPreflightResult(
+                generated_at_utc=generated_at,
+                manifest_hash=digest,
+                scope_id=scope_id,
+                account_profile=profile,
+                high_risk_override=high_risk,
+                promotion_eligible=promotion_eligible,
+                account=account,
+                terminal=terminal,
+                symbol=symbol,
+                tick=tick,
+                items=items,
+                decision=None,
+                order_request=None,
+                order_check=None,
+                ledger_path=str(ledger_path) if ledger_path else None,
+            )
+
+        account = active_feed.account_info()
+        terminal = active_feed.terminal_info()
+        symbol = active_feed.symbol_info()
+        tick = active_feed.symbol_tick()
+
+        connected = bool(terminal.get("connected", False))
+        _add(
+            items,
+            "mt5_connected",
+            PASS if connected else FAIL,
+            "terminal is connected" if connected else "terminal is not connected",
+        )
+        trade_allowed = bool(terminal.get("trade_allowed", False))
+        _add(
+            items,
+            "algo_trading",
+            PASS if trade_allowed else FAIL,
+            (
+                "terminal trade_allowed=True"
+                if trade_allowed
+                else "terminal trade_allowed=False; enable the Algo Trading toolbar button"
+            ),
+        )
+        api_disabled = bool(terminal.get("tradeapi_disabled", True))
+        _add(
+            items,
+            "python_trade_api",
+            PASS if not api_disabled else FAIL,
+            (
+                "Python trade API is enabled"
+                if not api_disabled
+                else "tradeapi_disabled=True; uncheck Tools > Options > Expert Advisors > "
+                "Disable automated trading via external Python API"
+            ),
+        )
+
+        trade_mode = account.get("trade_mode")
+        is_demo = trade_mode == 0
+        _add(
+            items,
+            "demo_account",
+            PASS if is_demo else FAIL,
+            (
+                f"account {account.get('login')} on {account.get('server')} is a demo account"
+                if is_demo
+                else f"account trade_mode={trade_mode!r}; expected demo mode 0"
+            ),
+            login=account.get("login"),
+            server=account.get("server"),
+            trade_mode=trade_mode,
+        )
+        if expected_login is not None and account.get("login") != expected_login:
+            _add(
+                items,
+                "expected_login",
+                FAIL,
+                f"connected account {account.get('login')} != expected {expected_login}",
+            )
+        else:
+            _add(
+                items,
+                "expected_login",
+                PASS,
+                "connected account matches the requested login"
+                if expected_login is not None
+                else "no expected login was specified",
+            )
+
+        if not symbol:
+            _add(items, "symbol", FAIL, f"symbol {symbol_name} is not available")
+        else:
+            visible = bool(symbol.get("visible", False))
+            _add(
+                items,
+                "symbol_visible",
+                PASS if visible else FAIL,
+                f"{symbol_name} visible={visible}",
+            )
+            symbol_trade_mode = symbol.get("trade_mode")
+            _add(
+                items,
+                "symbol_trade_mode",
+                PASS if symbol_trade_mode == 4 else FAIL,
+                f"{symbol_name} trade_mode={symbol_trade_mode!r}; expected 4 (full)",
+            )
+            volume_min = float(symbol.get("volume_min") or 0.0)
+            volume_step = float(symbol.get("volume_step") or 0.0)
+            volume_ok = volume_min > 0.0 and volume_min <= 0.01 + 1e-12 and (
+                volume_step <= 0.01 + 1e-12
+            )
+            _add(
+                items,
+                "symbol_volume",
+                PASS if volume_ok else FAIL,
+                f"volume_min={volume_min}, volume_step={volume_step}",
+                volume_min=volume_min,
+                volume_step=volume_step,
+            )
+            filling_mode = int(symbol.get("filling_mode") or 0)
+            _, filling_name = _choose_filling(filling_mode)
+            _add(
+                items,
+                "symbol_filling",
+                PASS,
+                f"filling_mode bitmask={filling_mode}; preflight will use {filling_name}",
+                filling_mode=filling_mode,
+                selected_filling=filling_name,
+            )
+
+        point = float(symbol.get("point") or 0.01)
+        bid = float(tick.get("bid") or 0.0)
+        ask = float(tick.get("ask") or 0.0)
+        spread_points: float | None = None
+        if point > 0.0 and ask > 0.0 and bid > 0.0:
+            spread_points = (ask - bid) / point
+        technical = as_dict(as_dict(manifest.get("strategy")).get("technical"))
+        max_spread = float(technical.get("max_spread_points", 100.0))
+        spread_ok = spread_points is not None and spread_points <= max_spread + 1e-9
+        _add(
+            items,
+            "spread",
+            PASS if spread_ok else FAIL,
+            (
+                f"spread={spread_points:.1f} points <= {max_spread:.1f}"
+                if spread_points is not None and spread_ok
+                else f"spread={spread_points!r} points; max {max_spread:.1f}"
+            ),
+            spread_points=spread_points,
+            max_spread_points=max_spread,
+        )
+
+        tick_time = _mt5_time_to_utc(tick.get("time"), broker_utc_offset_minutes)
+        tick_age_seconds: float | None = None
+        if tick_time is not None:
+            tick_age_seconds = (generated_at - tick_time).total_seconds()
+        market_open = tick_age_seconds is not None and tick_age_seconds <= 600.0
+        _add(
+            items,
+            "market_open",
+            PASS if market_open else BLOCKED,
+            (
+                f"last tick age={tick_age_seconds:.1f}s; market appears open"
+                if market_open
+                else (
+                    f"last tick age={tick_age_seconds!r}s; market appears closed "
+                    "(stale tick, weekend/holiday, or broker offset not calibrated)"
+                )
+            ),
+            tick_age_seconds=tick_age_seconds,
+            broker_utc_offset_minutes=broker_utc_offset_minutes,
+        )
+        _add(
+            items,
+            "broker_time_calibration",
+            HUMAN_JUDGMENT,
+            "broker UTC offset is a human calibration item; the manifest requires it "
+            "before live execution, and no offset is recorded in the manifest.",
+            broker_utc_offset_minutes=broker_utc_offset_minutes,
+        )
+
+        positions = active_feed.positions()
+        pending_orders = active_feed.orders()
+        _add(
+            items,
+            "existing_position",
+            PASS if not positions else BLOCKED,
+            (
+                "no open XAUUSD position"
+                if not positions
+                else f"{len(positions)} open XAUUSD position(s); reconcile before sending"
+            ),
+            positions=positions,
+        )
+        _add(
+            items,
+            "pending_orders",
+            PASS if not pending_orders else BLOCKED,
+            (
+                "no pending XAUUSD orders"
+                if not pending_orders
+                else f"{len(pending_orders)} pending XAUUSD order(s); reconcile before sending"
+            ),
+            orders=pending_orders,
+        )
+
+        try:
+            macro_store = load_macro_directory(macro_dir)
+        except Exception as exc:  # noqa: BLE001 - report the data blocker
+            _add(items, "macro_data", FAIL, f"could not load macro directory: {exc}")
+            macro_store = None
+
+        execution_bars: BarSeries | None = None
+        context_series: BarSeries | None = None
+        context_count = context_bars
+        try:
+            execution_bars = BarSeries(active_feed.fetch_bars("M15", bars), "M15")
+            context_series = BarSeries(active_feed.fetch_bars("H4", context_count), "H4")
+        except Exception as exc:  # noqa: BLE001 - report the data blocker
+            _add(items, "mt5_bars", FAIL, f"could not load MT5 bars: {exc}")
+        if execution_bars is not None and context_series is not None:
+            min_bars_ok = len(execution_bars) >= 500 and len(context_series) >= 500
+            _add(
+                items,
+                "mt5_bars",
+                PASS if min_bars_ok else FAIL,
+                f"M15={len(execution_bars)} H4={len(context_series)}; minimum is 500/500",
+                m15_bars=len(execution_bars),
+                h4_bars=len(context_series),
+            )
+
+        latest_bar = None
+        if execution_bars is not None:
+            latest_bar = _latest_closed_bar(
+                execution_bars,
+                tick=tick,
+                broker_utc_offset_minutes=broker_utc_offset_minutes,
+                execution_minutes=execution_minutes,
+            )
+            _add(
+                items,
+                "latest_closed_bar",
+                PASS if latest_bar is not None else FAIL,
+                (
+                    f"latest closed {execution_bar} bar={latest_bar.time_utc.isoformat()}"
+                    if latest_bar is not None
+                    else "no closed execution bar was found"
+                ),
+            )
+
+        if (
+            macro_store is not None
+            and execution_bars is not None
+            and context_series is not None
+            and latest_bar is not None
+        ):
+            as_of = latest_bar.time_utc + timedelta(minutes=execution_minutes)
+            equity = float(account.get("equity") or account.get("balance") or 0.0)
+            if equity <= 0.0:
+                _add(items, "account_equity", FAIL, f"account equity={equity!r}")
+            else:
+                risk_state = RiskState(
+                    equity=equity,
+                    starting_equity=equity,
+                    daily_start_equity=equity,
+                    peak_equity=equity,
+                )
+                strategy = StrategyEngine(manifest)
+                decision = strategy.decide(
+                    execution_bars=execution_bars,
+                    context_bars=context_series,
+                    macro_store=macro_store,
+                    as_of_utc=as_of,
+                    equity=equity,
+                    position=None,
+                    risk_state=risk_state,
+                )
+                fundamental = decision.fundamental
+                missing = list(fundamental.missing_inputs)
+                stale = list(fundamental.stale_inputs)
+                _add(
+                    items,
+                    "macro_data",
+                    BLOCKED if missing or stale else PASS,
+                    (
+                        "all weight-bearing macro inputs are present and fresh"
+                        if not missing and not stale
+                        else f"missing={missing}; stale={stale}"
+                    ),
+                    missing_inputs=missing,
+                    stale_inputs=stale,
+                    fundamental_score=fundamental.score,
+                    source_versions=fundamental.source_versions,
+                )
+                _add(
+                    items,
+                    "strategy_decision",
+                    PASS if decision.decision_type == "ENTER_LONG" else NO_TRADE,
+                    f"{decision.decision_type} at {as_of.isoformat()}; "
+                    f"score={decision.combined_score:+.3f}; "
+                    f"reasons={' | '.join(decision.reasons)}",
+                    decision_type=decision.decision_type,
+                    combined_score=decision.combined_score,
+                    fundamental_score=decision.fundamental.score,
+                    technical_score=decision.technical.score,
+                )
+                if decision.decision_type == "ENTER_LONG":
+                    volume = float(decision.position_size or 0.0)
+                    entry_price = ask if ask > 0.0 else float(latest_bar.close)
+                    stop_loss = float(decision.stop_loss or 0.0)
+                    take_profit = float(decision.take_profit or 0.0)
+                    contract_size = float(
+                        as_dict(as_dict(manifest.get("strategy")).get("sizing")).get(
+                            "contract_size_oz", 100.0
+                        )
+                    )
+                    max_notional_ratio = float(
+                        market.get("max_notional_exposure_ratio", 5.0)
+                    )
+                    max_notional = equity * max_notional_ratio
+                    notional = volume * contract_size * entry_price
+                    risk_amount = (entry_price - stop_loss) * volume * contract_size
+                    risk_pct = risk_amount / equity * 100.0 if equity > 0 else 0.0
+                    sizing_config = as_dict(
+                        as_dict(manifest.get("strategy")).get("sizing")
+                    )
+                    risk_config = as_dict(manifest.get("risk"))
+                    max_risk_pct = max(
+                        float(risk_config.get("per_trade_equity_pct", 0.25)),
+                        float(sizing_config.get("min_lot_risk_cap_pct", 0.0)),
+                    )
+                    stops_level = int(symbol.get("trade_stops_level") or 0)
+                    min_stop_distance = stops_level * point
+                    stop_distance = entry_price - stop_loss
+                    risk_ok = (
+                        volume > 0.0
+                        and stop_loss > 0.0
+                        and take_profit > 0.0
+                        and stop_loss < entry_price < take_profit
+                        and stop_distance + 1e-9 >= min_stop_distance
+                        and notional <= max_notional + 1e-6
+                        and risk_pct <= max_risk_pct + 1e-9
+                    )
+                    _add(
+                        items,
+                        "order_risk",
+                        PASS if risk_ok else FAIL,
+                        (
+                            f"volume={volume:.2f}, entry={entry_price:.2f}, "
+                            f"stop={stop_loss:.2f}, target={take_profit:.2f}, "
+                            f"risk={risk_amount:.2f} ({risk_pct:.4f}%), "
+                            f"notional={notional:.2f} <= {max_notional:.2f}, "
+                            f"min_stop_distance={min_stop_distance:.2f}"
+                        ),
+                        volume=volume,
+                        entry_price=entry_price,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        risk_amount=risk_amount,
+                        risk_pct=risk_pct,
+                        max_risk_pct=max_risk_pct,
+                        notional=notional,
+                        max_notional=max_notional,
+                        min_stop_distance=min_stop_distance,
+                    )
+                    order_request = _order_request(
+                        symbol=symbol_name,
+                        volume=volume,
+                        price=entry_price,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        deviation_points=deviation_points,
+                        magic=magic,
+                        comment="goldbot demo preflight; no order sent",
+                        filling_mode=int(symbol.get("filling_mode") or 0),
+                    )
+                    try:
+                        order_check = active_feed.check_order(order_request)
+                        check_ok = int(order_check.get("retcode", -1)) == 0
+                        _add(
+                            items,
+                            "order_check",
+                            PASS if check_ok else FAIL,
+                            (
+                                "MT5 order_check accepted the would-be request"
+                                if check_ok
+                                else "MT5 order_check rejected the would-be request: "
+                                f"retcode={order_check.get('retcode')!r} "
+                                f"comment={order_check.get('comment')!r}"
+                            ),
+                            order_check=order_check,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - report the check failure
+                        _add(items, "order_check", BLOCKED, f"order_check failed: {exc}")
+
+                if ledger_path:
+                    _persist_preflight(
+                        ledger_path=Path(ledger_path),
+                        manifest=manifest,
+                        manifest_digest=digest,
+                        scope_id=scope_id,
+                        account=account,
+                        terminal=terminal,
+                        symbol=symbol,
+                        tick=tick,
+                        decision=decision,
+                        items=items,
+                        order_request=order_request,
+                        order_check=order_check,
+                        started_at=as_of,
+                    )
+    finally:
+        if owns_feed:
+            active_feed.close()
+
+    return DemoPreflightResult(
+        generated_at_utc=generated_at,
+        manifest_hash=digest,
+        scope_id=scope_id,
+        account_profile=profile,
+        high_risk_override=high_risk,
+        promotion_eligible=promotion_eligible,
+        account=account,
+        terminal=terminal,
+        symbol=symbol,
+        tick=tick,
+        items=items,
+        decision=decision,
+        order_request=order_request,
+        order_check=order_check,
+        ledger_path=str(ledger_path) if ledger_path else None,
+    )
+
+
+def _persist_preflight(
+    *,
+    ledger_path: Path,
+    manifest: dict[str, Any],
+    manifest_digest: str,
+    scope_id: str,
+    account: dict[str, Any],
+    terminal: dict[str, Any],
+    symbol: dict[str, Any],
+    tick: dict[str, Any],
+    decision: StrategyDecision,
+    items: list[PreflightItem],
+    order_request: dict[str, Any] | None,
+    order_check: dict[str, Any] | None,
+    started_at: datetime,
+) -> None:
+    run_id = hashlib.sha256(
+        f"{scope_id}:{manifest_digest}:{started_at.isoformat()}:demo_preflight".encode(
+            "utf-8"
+        )
+    ).hexdigest()[:16]
+    status = _overall_status(items, decision)
+    with Ledger(ledger_path) as ledger:
+        ledger.start_run(
+            run_id=run_id,
+            scope_id=scope_id,
+            manifest_hash=manifest_digest,
+            started_at_utc=started_at,
+            summary={
+                "mode": "demo_preflight",
+                "symbol": str(as_dict(manifest.get("market")).get("symbol", "XAUUSD")),
+                "account": account.get("login"),
+                "server": account.get("server"),
+                "equity": account.get("equity"),
+                "status": status,
+                "broker_orders_sent": 0,
+            },
+            allow_multiple_runs=True,
+        )
+        ledger.record_decision(
+            decision,
+            scope_id=scope_id,
+            symbol=str(as_dict(manifest.get("market")).get("symbol", "XAUUSD")),
+            execution_bar=str(as_dict(manifest.get("market")).get("execution_bar", "M15")),
+            context_bar=str(as_dict(manifest.get("market")).get("context_bar", "H4")),
+            market={
+                "mode": "demo_preflight",
+                "account": account,
+                "terminal": terminal,
+                "symbol": symbol,
+                "tick": tick,
+                "order_request": order_request,
+                "order_check": order_check,
+            },
+        )
+        ledger.log_event(
+            level="INFO",
+            component="demo_preflight",
+            event_type="demo_preflight",
+            message="demo preflight completed; no broker order was sent",
+            correlation_id=run_id,
+            payload={
+                "status": status,
+                "items": [item.to_dict() for item in items],
+                "order_request": order_request,
+                "order_check": order_check,
+                "broker_orders_sent": 0,
+            },
+            logged_at_utc=ensure_utc(started_at),
+        )
