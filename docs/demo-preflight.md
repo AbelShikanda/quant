@@ -36,23 +36,25 @@ status: BLOCKED
 account: 106806652 FBS-Demo equity=1000.0 trade_mode=0
 terminal: connected=True trade_allowed=True tradeapi_disabled=False
 symbol: XAUUSD trade_mode=4 volume_min=0.01 filling_mode=3
-decision: NO_TRADE as_of=2026-11-13T23:45:00+00:00 score=-0.484
+decision: NO_TRADE as_of=2026-11-13T21:45:00+00:00 score=-0.484
 ```
 
 The API blocker is gone: `trade_allowed=True` and `tradeapi_disabled=False`.
-The preflight still blocks for honest reasons:
+The preflight still blocks on:
 
 - `market_open`: the last tick is stale because the market is closed for the
   weekend.
 - `macro_data`: `broad_usd` is stale at the decision time. The latest
   `DTWEXBGS` observation is `2026-11-06`, and the manifest's
   `stale_after_days.broad_usd` is `5`.
-- `broker_time_calibration`: the broker UTC offset is a human calibration item;
-  the manifest requires it before live execution. The last tick was
-  `2026-11-13 23:54:59` server time; spot gold closes at `22:00 UTC`, which
-  implies a `UTC+2` server offset. This is an inference, not a confirmation.
 - `strategy_decision`: `NO_TRADE`; the fusion layer did not produce an entry
   candidate.
+
+The broker UTC offset is no longer a blocker: the human owner confirmed
+`UTC+2` (120 minutes) on 2026-11-14. The evidence was the last tick at
+`2026-11-13 23:54:59` server time and the `22:00 UTC` spot-gold close. The
+confirmation is recorded with `--broker-utc-offset-minutes 120
+--confirm-broker-offset`.
 
 No broker order was sent. There is no forced-trade path: a demo order must wait
 for a valid `ENTER_LONG` decision and a separately reviewed execution command.

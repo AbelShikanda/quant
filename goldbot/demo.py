@@ -436,7 +436,11 @@ def run_demo_preflight(
                 if market_open
                 else (
                     f"last tick age={tick_age_seconds!r}s; market appears closed "
-                    "(stale tick, weekend/holiday, or broker offset not calibrated)"
+                    + (
+                        "(stale tick, weekend/holiday)"
+                        if broker_offset_confirmed
+                        else "(stale tick, weekend/holiday, or broker offset not calibrated)"
+                    )
                 )
             ),
             tick_age_seconds=tick_age_seconds,

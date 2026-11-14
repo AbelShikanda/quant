@@ -340,6 +340,7 @@ def _cmd_demo_preflight(args: argparse.Namespace) -> int:
             deviation_points=args.deviation_points,
             magic=args.magic,
             expected_login=args.expected_login,
+            broker_offset_confirmed=args.confirm_broker_offset,
         )
     except Exception as exc:  # noqa: BLE001 - CLI must report, not hide, the failure
         print(f"demo preflight failed: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -800,6 +801,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="broker server offset from UTC; calibration is a human item",
+    )
+    preflight.add_argument(
+        "--confirm-broker-offset",
+        action="store_true",
+        help="confirm the broker UTC offset is human-calibrated",
     )
     preflight.add_argument(
         "--deviation-points",
