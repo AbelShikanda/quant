@@ -38,8 +38,18 @@ The smallest live override the owner has already approved is `micro_100`
 **HIGH RISK**, **not promotion-eligible**, and not a substitute for a
 micro-lot broker.
 
-The disciplined, promotion-eligible profile remains `standard_1k` ($1,000).
+The owner explicitly approved `micro_50` on 2026-11-15: 100:1 leverage cap
+(after 80:1 failed the current 4,114 notional), 25% per-trade cap, 25%
+minimum-lot risk guard, 12% daily loss halt, and 20% max drawdown
+flatten/halt. It is HIGH RISK, not promotion-eligible, and remains a stop from
+blowing the account: one 1.5x ATR stop (~19-21% of $50) flattens and halts.
 
-For **$50**, the only safe option is a paper account, or a broker/instrument
-with genuinely smaller contracts (for example 0.001 lot on a micro/cent
-account, subject to human approval).
+| Option | Cap | Notional needed | Stop risk | Promotion-eligible |
+|---|---:|---:|---:|---|
+| $50 micro_50 | 100:1 | 3,880.26-4,114.11 | ~19-21% | No |
+| $100 micro_100 | 50:1 | 3,880.26 | ~9.7% | No |
+| $1,000 standard_1k | 5:1 | 3,880.26 | ~0.97% | Yes (after gates) |
+
+The $50 profile is an owner override, not a recommendation. It has been
+created in `config/profiles/micro_50.yaml` but has **not** been run against a
+live broker order.

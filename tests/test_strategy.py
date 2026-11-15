@@ -20,6 +20,7 @@ from goldbot.strategy import StrategyEngine
 ROOT = Path(__file__).resolve().parents[1]
 GOLD = ROOT / "config" / "scope.gold.v1.yaml"
 MICRO_100 = ROOT / "config" / "profiles" / "micro_100.yaml"
+MICRO_50 = ROOT / "config" / "profiles" / "micro_50.yaml"
 
 
 def _inputs():
@@ -80,6 +81,26 @@ def test_micro_100_profile_allows_minimum_lot_on_100_dollars() -> None:
     assert 10.0 < sizing.risk_pct <= 11.0
     assert sizing.min_lot_risk_pct <= 11.0
     assert sizing.notional <= sizing.max_notional
+
+
+def test_micro_50_profile_allows_minimum_lot_on_50_dollars() -> None:
+    manifest = load_manifest_with_profile(GOLD, MICRO_50)
+    engine = StrategyEngine(manifest)
+    sizing = engine.size_position(equity=50.0, atr_value=7.1088, entry_price=4114.11)
+    assert sizing.volume == 0.01
+    assert 19.0 < sizing.risk_pct <= 25.0
+    assert sizing.min_lot_risk_pct <= 25.0
+    assert sizing.notional <= sizing.max_notional
+
+
+def test_micro_50_profile_is_high_risk_and_not_promotion_eligible() -> None:
+    profile = load_profile(MICRO_50)
+    merged = apply_profile(load_manifest(GOLD), profile)
+    assert merged["risk"]["leverage_cap"] == 100.0
+    assert merged["risk"]["per_trade_equity_pct"] == 25.0
+    assert merged["risk"]["max_drawdown_flatten_pct"] == 20.0
+    assert merged["profile_high_risk_override"] is True
+    assert merged["profile_promotion_eligible"] is False
 
 
 def test_metrics_include_sharpe_sortino_and_exposure() -> None:

@@ -1,0 +1,26 @@
+profile_id: micro_50
+description: >-
+  Experimental $50 account on the standard 100 oz/lot XAUUSD contract. The
+  broker minimum is 0.01 lot (1 oz), which requires at least 77.6x leverage.
+  The owner explicitly approved a 100:1 bot leverage cap, the highest this
+  contract permits a $50 account at current prices. The per-trade cap is 25%,
+  the minimum-lot risk guard is 25%, the daily halt is 12% and the max
+  drawdown flatten/halt is 20% so one 1.5x ATR stop (~19-21% at $50) flattens
+  and halts. HIGH RISK: one normal stop is roughly a one-fifth account loss.
+  Not promotion-eligible. Use a micro-lot broker for a risk-preserving $50
+  account.
+high_risk_override: true
+promotion_eligible: false
+overrides:
+  market:
+    account_model: leveraged
+    max_notional_exposure_ratio: 100.0
+  risk:
+    per_trade_equity_pct: 25.0
+    daily_loss_halt_pct: 12.0
+    max_drawdown_flatten_pct: 20.0
+    leverage_cap: 100.0
+  strategy:
+    sizing:
+      max_notional_exposure_ratio: 100.0
+      min_lot_risk_cap_pct: 25.0
