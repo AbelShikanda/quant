@@ -61,23 +61,97 @@ def test_broken_scope_fails_for_specific_reasons() -> None:
     assert "not found" in storage_schema.detail
 
 
-def test_central_bank_missing_file_is_human_judgment() -> None:
-    manifest = load_manifest(GOLD)
+def test_central_bank_missing_file_is_human_judgment(tmp_path: Path) -> None:
+    manual = tmp_path / "missing.xlsx"
+    reminder = tmp_path / "refresh_event.json"
+    reminder.write_text(
+        json.dumps({"last_refresh_utc": "2026-11-15T00:00:00Z"}),
+        encoding="utf-8",
+    )
+    manifest = {
+        "manifest_version": 1,
+        "scope_id": "test.manual",
+        "sources": [
+            {
+                "id": "manual.source",
+                "checks": [
+                    {
+                        "kind": "manual_xlsx",
+                        "path": str(manual),
+                        "max_age_days": 90,
+                        "reminder_event": str(reminder),
+                        "reminder_cadence_days": 30,
+                        "min_rows": 1,
+                        "label": "test label",
+                    }
+                ],
+            }
+        ],
+    }
     ctx = CheckContext(
         manifest=manifest,
-        manifest_path=GOLD,
-        project_root=ROOT,
-        manifest_hash=manifest_hash(manifest),
+        manifest_path=tmp_path / "scope.yaml",
+        project_root=tmp_path,
+        manifest_hash="test",
         offline=True,
         no_mt5=True,
     )
-    outcome = check_manual_xlsx(ctx, {"source_id": "wgc_central_bank_manual"})
+    outcome = check_manual_xlsx(ctx, {"source_id": "manual.source"})
     assert outcome.status == HUMAN_JUDGMENT
     assert "absent" in outcome.detail
-    assert outcome.evidence["label"] == (
-        "derived from human-downloaded file; weight in entry score = 0; "
-        "NOT consumed by the overseer (§9) in v1."
+    assert "weight in entry score = 0" in outcome.evidence["label"]
+
+
+def test_central_bank_mechanical_checks_pass_but_content_is_human_judgment(
+    tmp_path: Path,
+) -> None:
+    import openpyxl
+
+    manual = tmp_path / "world.xlsx"
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = "PDF"
+    worksheet.append(["WORLD OFFICIAL GOLD HOLDINGS"])
+    worksheet.append([1, "United States", 8133.46])
+    workbook.save(manual)
+    reminder = tmp_path / "refresh_event.json"
+    reminder.write_text(
+        json.dumps({"last_refresh_utc": "2026-11-15T00:00:00Z"}),
+        encoding="utf-8",
     )
+    manifest = {
+        "manifest_version": 1,
+        "scope_id": "test.manual",
+        "sources": [
+            {
+                "id": "manual.source",
+                "checks": [
+                    {
+                        "kind": "manual_xlsx",
+                        "path": str(manual),
+                        "max_age_days": 90,
+                        "reminder_event": str(reminder),
+                        "reminder_cadence_days": 30,
+                        "min_rows": 1,
+                        "label": "test label",
+                    }
+                ],
+            }
+        ],
+    }
+    ctx = CheckContext(
+        manifest=manifest,
+        manifest_path=tmp_path / "scope.yaml",
+        project_root=tmp_path,
+        manifest_hash="test",
+        offline=True,
+        no_mt5=True,
+    )
+    outcome = check_manual_xlsx(ctx, {"source_id": "manual.source"})
+    assert outcome.status == HUMAN_JUDGMENT
+    assert "passes mechanical checks" in outcome.detail
+    assert outcome.evidence["rows"] >= 2
+    assert outcome.evidence["mechanical_failures"] == []
 
 
 def test_runtime_blocker_yields_partial_and_exit_code(tmp_path: Path) -> None:

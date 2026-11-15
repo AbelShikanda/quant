@@ -28,6 +28,7 @@ data/manual/**/*.xlsx
 data/manual/**/*.xls
 data/manual/**/*.csv
 data/manual/**/*.pdf
+data/manual/**/refresh_event.json
 
 # OS/editor noise
 .DS_Store

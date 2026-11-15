@@ -1138,22 +1138,39 @@ def check_manual_xlsx(ctx: CheckContext, spec: dict[str, Any]) -> CheckOutcome:
         )
     try:
         content = path.read_bytes()
-        headers, rows, sheets, sheet = _read_xlsx(
-            content,
-            resolved.get("sheet_name"),
-            int(resolved.get("header_row", 1)),
+        workbook = openpyxl.load_workbook(
+            io.BytesIO(content), read_only=True, data_only=True
         )
-        evidence.update(
-            {
-                "parse_ok": True,
-                "bytes": len(content),
-                "sheets": sheets,
-                "sheet": sheet,
-                "headers": headers,
-                "rows": len(rows),
-                "sha256": hashlib.sha256(content).hexdigest(),
-            }
-        )
+        try:
+            sheets = list(workbook.sheetnames)
+            sheet_name = resolved.get("sheet_name")
+            if sheet_name:
+                if sheet_name not in sheets:
+                    raise ValueError(f"sheet not found: {sheet_name}")
+                worksheet = workbook[sheet_name]
+            else:
+                worksheet = workbook[sheets[0]]
+            non_empty_rows = [
+                row
+                for row in worksheet.iter_rows(values_only=True)
+                if any(value is not None and str(value).strip() for value in row)
+            ]
+            raw_headers = non_empty_rows[0] if non_empty_rows else []
+            headers = [str(value).strip() if value is not None else "" for value in raw_headers]
+            rows = non_empty_rows[1:] if non_empty_rows else []
+            evidence.update(
+                {
+                    "parse_ok": True,
+                    "bytes": len(content),
+                    "sheets": sheets,
+                    "sheet": worksheet.title,
+                    "headers": headers,
+                    "rows": len(non_empty_rows),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+            )
+        finally:
+            workbook.close()
     except Exception as exc:
         evidence["parse_ok"] = False
         evidence["parse_error"] = f"{type(exc).__name__}: {exc}"
@@ -1164,8 +1181,8 @@ def check_manual_xlsx(ctx: CheckContext, spec: dict[str, Any]) -> CheckOutcome:
         )
     mechanical_failures: list[str] = []
     min_rows = int(resolved.get("min_rows", 0))
-    if len(rows) < min_rows:
-        mechanical_failures.append(f"only {len(rows)} rows, expected at least {min_rows}")
+    if len(non_empty_rows) < min_rows:
+        mechanical_failures.append(f"only {len(non_empty_rows)} rows, expected at least {min_rows}")
     missing = _check_columns(headers, as_list(resolved.get("required_columns")), resolved.get("value_column_regex"))
     if missing:
         mechanical_failures.append(f"missing columns: {missing}")
