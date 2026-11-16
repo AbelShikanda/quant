@@ -143,6 +143,29 @@ function renderSteps(s) {
   byId('agentStepsNote').textContent = notes.join(' ') || 'Watching agent steps...';
 }
 
+function renderNotifications(items) {
+  var list = byId('notificationsList');
+  var badge = byId('notificationsCount');
+  if (!list || !badge) { return; }
+  items = items || [];
+  badge.textContent = String(items.length);
+  if (!items.length) {
+    list.innerHTML = '<li class="muted">All clear.</li>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < items.length; i += 1) {
+    var item = items[i];
+    var link = item.link ? '<a href="' + escapeHtml(item.link) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(item.link_text || 'Open') + '</a>' : '';
+    html += '<li class="notify ' + escapeHtml(item.severity) + '">'
+      + '<div>' + (link ? link + '<div>' : '')
+      + '<strong>' + escapeHtml(item.title) + '</strong>'
+      + (item.note ? '<p>' + escapeHtml(item.note) + '</p>' : '')
+      + '</div>' + (link ? '</div>' : '') + '</li>';
+  }
+  list.innerHTML = html;
+}
+
 function renderLiveTrades(state) {
   var positions = state.open_positions || [];
   var snapshot = state.latest_snapshot || {};
@@ -195,6 +218,7 @@ function updateState(data) {
   var s = data.state || data;
   renderProfileSpec(s.profile_spec || {});
   renderSteps(s);
+  renderNotifications(s.notifications || []);
   renderLiveTrades(s);
   var agent = s.agent || {};
   var running = !!agent.running;
@@ -694,6 +718,15 @@ h1,h2,h3{margin:0;font-weight:700}
 .override-toggle{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:#0a0a0a;color:var(--muted);font-weight:700;font-size:11px;cursor:pointer;user-select:none;white-space:nowrap}
 .override-toggle input{accent-color:#f59e0b;cursor:pointer;transform:scale(1.2)}
 .override-toggle.on{color:#fca5a5;border-color:#7f1d1d;box-shadow:0 0 14px rgba(239,68,68,.45)}
+.notifications-panel{margin-top:12px;padding:12px}
+.notifications{display:flex;flex-direction:column;gap:8px;list-style:none;margin:0;padding:0}
+.notify{display:flex;gap:12px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.notify strong{font-size:11px}
+.notify p{margin:2px 0 0;color:var(--muted);font-size:11px}
+.notify.warning{border-color:#7f1d1d;background:#1f0404}
+.notify.info{border-color:#164e63;background:#07161f}
+.notify a{color:var(--gold);text-decoration:none;font-weight:700;white-space:nowrap}
+.notify a:hover{text-decoration:underline}
 .layout{display:grid;grid-template-columns:330px 1fr 370px;gap:14px;margin-top:12px}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px}
 .node-panel{padding:12px}
@@ -836,6 +869,14 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
 </header>
 
 <div id="overrideBanner" class="banner banner-danger" style="display:none">DEMO OVERRIDE ACTIVE - macro/fusion gates are bypassed. This will place a bare 0.01 XAUUSD demo order if you click Accept &amp; Execute. For testing only.</div>
+
+<section class="panel notifications-panel" id="notificationsPanel">
+  <div class="chart-header">
+    <h2 class="panel-title">Needs your attention</h2>
+    <span id="notificationsCount" class="badge badge-red">0</span>
+  </div>
+  <ul id="notificationsList" class="notifications"></ul>
+</section>
 
 <section class="panel profile-panel" id="profilePanel">
   <div class="profile-left">

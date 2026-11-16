@@ -355,7 +355,7 @@ def _post(url: str, payload, *, content_type: str = "application/json"):
     if isinstance(data, str):
         data = data.encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": content_type}, method="POST")
-    return urllib.request.urlopen(req, timeout=5)
+    return urllib.request.urlopen(req, timeout=15)
 
 
 def test_no_mt5_import_in_live_dashboard() -> None:

@@ -615,6 +615,7 @@ from .live_dashboard_ui import render_page  # noqa: E402
 from .profiles import load_profile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+WGC_XLSX_URL = "https://www.gold.org/download/file/7739/World_official_gold_holdings_as_of_Nov2026_IFS.xlsx"
 
 _PROFILE_KEYS = {
     "micro_50": "config/profiles/micro_50.yaml",
@@ -633,6 +634,77 @@ def _profile_key(profile_path: str) -> str:
         except OSError:
             continue
     return target.stem
+
+
+def _build_notifications(state: dict[str, Any]) -> list[dict[str, Any]]:
+    notifications: list[dict[str, Any]] = []
+    fundamentals = state.get("fundamentals") or {}
+
+    for stale in fundamentals.get("stale_inputs", []):
+        notifications.append(
+            {
+                "severity": "warning",
+                "id": f"stale:{stale}",
+                "title": f"{stale} is stale",
+                "note": "FRED publishes this weekly; the bot will stay blocked until the next release. Check the FRED download page and replace data/raw/macro/DTWEXBGS.csv if it appears.",
+            }
+        )
+
+    for missing in fundamentals.get("missing_inputs", []):
+        notifications.append(
+            {
+                "severity": "warning",
+                "id": f"missing:{missing}",
+                "title": f"{missing} is missing",
+                "note": "The bot will stay blocked until this file is present. Save it under data/raw/macro/ with the exact filename the manifest expects.",
+            }
+        )
+
+    notifications.append(
+        {
+            "severity": "info",
+            "id": "wgc_central_bank_manual",
+            "title": "Central-bank gold file (WGC / IMF)",
+            "note": "Diagnostic only; weight = 0.00. Not consumed by the overseer. Save as data/manual/wgc/world_official_gold_holdings.xlsx. Do not commit it.",
+            "link": WGC_XLSX_URL,
+            "link_text": "Download the Excel file",
+        }
+    )
+
+    try:
+        signoff_exists = (ROOT / "reports" / "m1.signoff.json").exists()
+    except OSError:
+        signoff_exists = False
+
+    if not signoff_exists:
+        notifications.append(
+            {
+                "severity": "warning",
+                "id": "human.signoff",
+                "title": "M1 sign-off not recorded",
+                "note": "reports/m1.signoff.json is missing. Record it after reviewing the M1 validator report.",
+            }
+        )
+
+    notifications.append(
+        {
+            "severity": "info",
+            "id": "kill_switch_drill",
+            "title": "Kill-switch drill not done",
+            "note": "Required before promotion. The dashboard can narrate the drill; the bot process must actually perform flatten/halt and prove it wrote to the ledger.",
+        }
+    )
+
+    notifications.append(
+        {
+            "severity": "info",
+            "id": "reconnect_drill",
+            "title": "Reconnect drill not done",
+            "note": "Required before promotion. Disconnect MT5 and prove the bot recovers deterministically without duplicating orders or losing the position.",
+        }
+    )
+
+    return notifications
 
 
 def _profile_spec(profile_path: str) -> dict[str, Any]:
@@ -1210,6 +1282,7 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
         state["profile_spec"] = _profile_spec(self.server.profile)
         state["selected_profile"] = _profile_key(self.server.profile)
         state["expected_login"] = self.server.expected_login
+        state["notifications"] = _build_notifications(state)
         return state
 
     def _stream_state(self) -> None:
