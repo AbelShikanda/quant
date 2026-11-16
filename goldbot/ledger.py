@@ -72,12 +72,25 @@ class Ledger(AbstractContextManager["Ledger"]):
                 self.lock_path,
                 os.O_CREAT | os.O_EXCL | os.O_WRONLY,
             )
-        except FileExistsError as exc:
-            raise LedgerLockError(
-                "another writer owns this ledger: "
-                f"{self.path}; lock file: {self.lock_path}. "
-                "If the previous process crashed, remove the stale lock file."
-            ) from exc
+        except FileExistsError:
+            try:
+                with self.lock_path.open("r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                pid = int(payload.get("pid", -1))
+                host = payload.get("host")
+                if self._lock_owner_alive(pid, host):
+                    raise
+                self.lock_path.unlink(missing_ok=True)
+                descriptor = os.open(
+                    self.lock_path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                )
+            except Exception as exc:
+                raise LedgerLockError(
+                    "another writer owns this ledger: "
+                    f"{self.path}; lock file: {self.lock_path}. "
+                    "If the previous process crashed, remove the stale lock file."
+                ) from exc
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(
                 {
@@ -89,6 +102,22 @@ class Ledger(AbstractContextManager["Ledger"]):
                 handle,
                 ensure_ascii=False,
             )
+
+    @staticmethod
+    def _lock_owner_alive(pid: int, host: str | None) -> bool:
+        try:
+            if pid <= 0:
+                return False
+            current_host = socket.gethostname()
+            if host and host != current_host:
+                # Cannot verify owner across hosts; refuse to steal.
+                return True
+            os.kill(pid, 0)
+            return True
+        except PermissionError:
+            return True
+        except (ProcessLookupError, OSError, ValueError):
+            return False
 
     def _release_lock(self) -> None:
         self.lock_path.unlink(missing_ok=True)

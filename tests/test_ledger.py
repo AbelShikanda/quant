@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import socket
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -201,3 +203,24 @@ def test_ledger_is_wal_single_writer_and_round_trips_records(tmp_path: Path) -> 
     # Closing the first ledger releases the writer lock.
     with Ledger(path, schema_path=SCHEMA) as reopened:
         assert reopened.counts()["decisions"] == 1
+
+
+def test_stale_lock_file_owned_by_dead_pid_is_reclaimed(tmp_path: Path) -> None:
+    path = tmp_path / "stale.sqlite"
+    lock_path = Path(str(path) + ".writer.lock")
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": 999999,
+                "host": socket.gethostname(),
+                "created_at_utc": "2000-01-01T00:00:00Z",
+                "ledger": str(path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with Ledger(path, schema_path=SCHEMA) as ledger:
+        assert ledger is not None
+
+    assert not lock_path.exists()
