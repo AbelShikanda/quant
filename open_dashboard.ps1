@@ -8,7 +8,7 @@ if (-not $listening) {
     Write-Host "Starting GOLD BOT dashboard on port $port ..."
     Start-Process -FilePath $python -ArgumentList @(
         "-m", "goldbot.cli", "dashboard-live",
-        "--ledger", "reports/micro_50.paper.ledger.sqlite",
+        "--ledger", "reports/demo.execution.ledger.sqlite",
         "--profile", "config/profiles/micro_50.yaml",
         "--host", "127.0.0.1",
         "--port", "$port"

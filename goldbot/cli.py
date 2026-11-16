@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Sequence
 
+from .contracts import utc_now
 from .backtest import BacktestRunner
 from .dashboard import build_dashboard, build_dashboard_from_file
 from .data import (
@@ -530,6 +531,82 @@ def _cmd_decline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_close_position(args: argparse.Namespace) -> int:
+    """Close one MT5 position by ticket and record the outcome in the ledger."""
+    from .data import MT5DataFeed
+    feed = MT5DataFeed(symbol=args.symbol, broker_utc_offset_minutes=args.broker_utc_offset_minutes)
+    try:
+        feed.connect()
+        result = feed.close_position(
+            ticket=int(args.ticket),
+            symbol=args.symbol,
+            comment=args.reason[:24],
+        )
+    except Exception as exc:  # noqa: BLE001 - report the failure, don't crash
+        print(f"close failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    retcode = int(result.get("retcode", -1))
+    print(f"close_result: retcode={retcode} comment={result.get('comment')!r} order={result.get('order')!r} deal={result.get('deal')!r} price={result.get('price')!r}")
+
+    exit_price = float(result.get("price") or 0.0)
+    if exit_price <= 0:
+        exit_price = 0.0
+
+    try:
+        with Ledger(args.ledger) as ledger:
+            row = ledger.connection.execute(
+                """
+                SELECT id, position_id, side, volume, open_price, stop_loss, take_profit
+                FROM positions
+                WHERE broker_position_ticket = ? OR position_id = ?
+                LIMIT 1
+                """,
+                (int(args.ticket), f"broker-{int(args.ticket)}"),
+            ).fetchone()
+            if row is None:
+                open_price = exit_price
+                pnl = 0.0
+                ledger.connection.execute(
+                    """
+                    INSERT INTO positions
+                        (position_id, symbol, side, volume, open_price, open_time_utc,
+                         stop_loss, take_profit, close_price, close_time_utc, close_reason,
+                         realized_pnl, broker_position_ticket, state, raw_position_json)
+                    VALUES (?, ?, 'LONG', 0.0, ?, ?, NULL, NULL, ?, ?, ?, 0.0, ?, 'DEMO_CLOSED', '{}')
+                    """,
+                    (
+                        f"broker-{int(args.ticket)}",
+                        args.symbol,
+                        open_price,
+                        utc_now().isoformat(),
+                        exit_price,
+                        utc_now().isoformat(),
+                        args.reason,
+                        int(args.ticket),
+                    ),
+                )
+            else:
+                side = str(row["side"]).upper()
+                direction = 1 if side == "LONG" else -1
+                pnl = (exit_price - float(row["open_price"])) * float(row["volume"]) * 100.0 * direction
+                ledger.connection.execute(
+                    """
+                    UPDATE positions
+                    SET close_price = ?, close_time_utc = ?, close_reason = ?,
+                        realized_pnl = ?, state = 'DEMO_CLOSED'
+                    WHERE id = ?
+                    """,
+                    (exit_price, utc_now().isoformat(), args.reason, pnl, int(row["id"])),
+                )
+            ledger.connection.commit()
+            print(f"ledger: closed-position recorded; realized_pnl={pnl:.2f}")
+    except Exception as exc:  # noqa: BLE001 - close already happened; log but don't fail
+        print(f"ledger update failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    return 0 if retcode in {10008, 10009} else 2
+
+
 def _cmd_walkforward(args: argparse.Namespace) -> int:
     try:
         manifest, execution, context, macro_store = _build_run_inputs(args)
@@ -1005,7 +1082,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live.add_argument(
         "--ledger",
-        default=str(Path("reports/micro_50.paper.ledger.sqlite")),
+        default="reports/demo.execution.ledger.sqlite",
         help="path to the SQLite ledger (read-only; never created by the dashboard)",
     )
     live.add_argument(

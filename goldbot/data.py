@@ -533,6 +533,47 @@ class MT5DataFeed:
             raise DataError("MT5DataFeed.connect() must be called first")
         return _mt5_record_to_dict(self._mt5.order_check(request))
 
+    def open_positions(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        if self._mt5 is None:
+            raise DataError("MT5DataFeed.connect() must be called first")
+        raw = self._mt5.positions_get(symbol=symbol) if symbol else self._mt5.positions_get()
+        return [_mt5_record_to_dict(item) for item in (raw or [])]
+
+    def close_position(
+        self,
+        *,
+        ticket: int,
+        symbol: str = "XAUUSD",
+        comment: str = "goldbot user close",
+    ) -> dict[str, Any]:
+        """Close one open position by MT5 ticket with a market order."""
+        if self._mt5 is None:
+            raise DataError("MT5DataFeed.connect() must be called first")
+        mt5 = self._mt5
+        raw_positions = mt5.positions_get(ticket=int(ticket))
+        if not raw_positions:
+            raise DataError(f"no open position with ticket {ticket}")
+        pos = raw_positions[0]
+        position_type = int(getattr(pos, "type", 0)) # 0=BUY, 1=SELL
+        volume = float(pos.volume)
+        price_type = mt5.ORDER_TYPE_SELL if position_type == 0 else mt5.ORDER_TYPE_BUY
+        tick = mt5.symbol_info_tick(symbol)
+        price = float(tick.bid) if position_type == 0 else float(tick.ask)
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": volume,
+            "type": price_type,
+            "position": int(ticket),
+            "price": price,
+            "deviation": 20,
+            "magic": int(getattr(pos, "magic", 0) or 0),
+            "comment": comment,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        return _mt5_record_to_dict(mt5.order_send(request))
+
     def send_order(self, request: dict[str, Any]) -> dict[str, Any]:
         """Submit an order. Only the guarded demo-order path may call this."""
         if self._mt5 is None:

@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import quote, urlparse
 import time
 
-DEFAULT_LEDGER = Path("reports/micro_50.paper.ledger.sqlite")
+DEFAULT_LEDGER = Path("reports/demo.execution.ledger.sqlite")
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8010
 DEFAULT_REFRESH_SECONDS = 2.0
@@ -360,7 +360,7 @@ def load_state(
             SELECT bar_time_utc, open_price, high_price, low_price, close_price, volume
             FROM chart_bars ORDER BY bar_time_utc ASC LIMIT ?
             """,
-            (400,),
+            (200,),
         )
         _add_error(errors, error)
 
@@ -814,6 +814,26 @@ def _decline_command(
     ]
 
 
+def _close_position_command(
+    *,
+    ticket: str,
+    reason: str,
+) -> list[str]:
+    return _python_command() + [
+        "-m",
+        "goldbot.cli",
+        "close-position",
+        "--ticket",
+        str(ticket),
+        "--symbol",
+        "XAUUSD",
+        "--reason",
+        reason,
+        "--ledger",
+        EXECUTION_LEDGER,
+    ]
+
+
 def _start_agent(
     server: "LiveDashboardServer",
 ) -> dict[str, Any]:
@@ -827,7 +847,7 @@ def _start_agent(
         cmd = _agent_command(
             profile_rel=server.profile,
             macro_dir=server.macro_dir,
-            ledger_path=str(server.ledger_path),
+            ledger_path=EXECUTION_LEDGER,
             manifest_rel="config/scope.gold.v1.yaml",
             broker_utc_offset_minutes=server.broker_utc_offset_minutes,
             expected_login=server.expected_login,
@@ -1092,6 +1112,53 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
                 return
             _append_log("INFO", f"decline logged: {reason}")
             _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True})
+            return
+
+        if path == "/api/agent/close-position":
+            confirm = str(payload.get("confirm") or "")
+            if confirm != "END TRADE":
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"v": 1, "ok": False, "error": "confirm must be END TRADE"})
+                return
+            ticket = str(payload.get("ticket") or "").strip()
+            if not ticket:
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"v": 1, "ok": False, "error": "ticket is required"})
+                return
+            cmd = _close_position_command(ticket=ticket, reason="operator request")
+            _AGENT_LOG.clear()
+            _append_log("INFO", f"spawning close-position: {' '.join(cmd)}")
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            except subprocess.TimeoutExpired:
+                _append_log("ERROR", "close-position timed out after 60s")
+                _json_response(self, HTTPStatus.GATEWAY_TIMEOUT, {"v": 1, "ok": False, "error": "close-position timed out"})
+                return
+            stdout = proc.stdout or ""
+            stderr = proc.stderr or ""
+            stdout_tail = stdout.splitlines()[-20:] if stdout else []
+            stderr_tail = stderr.splitlines()[-20:] if stderr else []
+            for line in stdout.splitlines():
+                _AGENT_LOG.append(line)
+            for line in stderr.splitlines():
+                _AGENT_LOG.append(f"[STDERR] {line}")
+            ok = proc.returncode == 0
+            _append_log("INFO", f"close-position exited with code {proc.returncode}; ok={ok}")
+            _json_response(
+                self,
+                HTTPStatus.OK,
+                {
+                    "v": 1,
+                    "ok": ok,
+                    "exit_code": proc.returncode,
+                    "stdout_tail": stdout_tail,
+                    "stderr_tail": stderr_tail,
+                },
+            )
             return
 
         if path == "/api/agent/profile":

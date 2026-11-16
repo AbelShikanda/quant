@@ -29,7 +29,7 @@ function Open-Dashboard {
         Write-Host "Starting the read-only dashboard on port $port ..."
         Start-Process -FilePath $python -ArgumentList @(
             "-m", "goldbot.cli", "dashboard-live",
-            "--ledger", $dashboardLedger,
+            "--ledger", "reports/demo.execution.ledger.sqlite",
             "--profile", "config/profiles/micro_50.yaml",
             "--host", "127.0.0.1",
             "--port", "$port"

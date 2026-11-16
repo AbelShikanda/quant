@@ -69,6 +69,7 @@ function setStep(id, state) {
   if (el) { el.className = 'step step-' + state; }
 }
 
+var pendingExitTicket = null;
 function setNodeState(id, state) {
   var el = byId(id);
   if (!el) { return; }
@@ -142,10 +143,59 @@ function renderSteps(s) {
   byId('agentStepsNote').textContent = notes.join(' ') || 'Watching agent steps...';
 }
 
+function renderLiveTrades(state) {
+  var positions = state.open_positions || [];
+  var snapshot = state.latest_snapshot || {};
+  var market = snapshot.market || {};
+  var tick = market.symbol_tick || {};
+  var chartBars = state.chart_bars || [];
+  var lastBar = chartBars.length ? chartBars[chartBars.length - 1] : null;
+  var barPrice = lastBar ? Number(lastBar.close) : null;
+  var bid = tick.bid != null ? Number(tick.bid) : null;
+  var price = (bid != null && !isNaN(bid)) ? bid : (barPrice != null && !isNaN(barPrice) ? barPrice : null);
+  var list = byId('liveTradesList');
+  var count = byId('liveTradesCount');
+  if (!list || !count) { return; }
+  count.textContent = String(positions.length) + ' open';
+  if (!positions.length) {
+    list.innerHTML = '<p class="muted">No open positions.</p>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < positions.length; i += 1) {
+    var p = positions[i];
+    var side = p.side || 'LONG';
+    var direction = side === 'LONG' ? 1 : -1;
+    var volume = Number(p.volume || 0);
+    var entry = Number(p.open_price || 0);
+    var stop = p.stop_loss == null ? null : Number(p.stop_loss);
+    var target = p.take_profit == null ? null : Number(p.take_profit);
+    var pnl = null;
+    if (price != null && !isNaN(price) && !isNaN(entry)) {
+      pnl = (price - entry) * volume * 100.0 * direction;
+    }
+    var rowClass = pnl == null ? '' : (pnl >= 0 ? ' win' : ' loss');
+    var pnlClass = pnl == null ? '' : (pnl >= 0 ? 'pnl-positive' : 'pnl-negative');
+    var pnlText = pnl == null ? 'n/a' : (pnl >= 0 ? '+' : '') + pnl.toFixed(2);
+    var ticket = p.broker_position_ticket != null ? p.broker_position_ticket : '';
+    html += '<div class="trade-row' + rowClass + '">'
+      + '<div>' + escapeHtml(side) + '</div>'
+      + '<div>' + volume.toFixed(2) + ' @ ' + fmtNum(entry, 2) + '</div>'
+      + '<div>' + (price != null ? fmtNum(price, 2) : 'n/a') + '</div>'
+      + '<div class="' + pnlClass + '">' + escapeHtml(pnlText) + '</div>'
+      + '<div>SL ' + (stop == null ? 'n/a' : Number(stop).toFixed(2)) + '</div>'
+      + '<div>TP ' + (target == null ? 'n/a' : Number(target).toFixed(2)) + '</div>'
+      + '<button class="exit-trade-btn" data-ticket="' + escapeHtml(ticket) + '" data-id="' + escapeHtml(p.position_id || '') + '" type="button">END TRADE</button>'
+      + '</div>';
+  }
+  list.innerHTML = html;
+}
+
 function updateState(data) {
   var s = data.state || data;
   renderProfileSpec(s.profile_spec || {});
   renderSteps(s);
+  renderLiveTrades(s);
   var agent = s.agent || {};
   var running = !!agent.running;
   var mt5Status = (s.mt5 && s.mt5.status) || 'unknown';
@@ -476,8 +526,36 @@ byId('profileSelect').addEventListener('change', function (e) {
 byId('reviewEvidenceBtn').addEventListener('click', function () { byId('evidenceDrawer').showModal(); });
 byId('closeEvidenceDrawerBtn').addEventListener('click', function () { closeDialog('evidenceDrawer'); });
 byId('declineBtn').addEventListener('click', function () { byId('declineModal').showModal(); });
+byId('liveTradesList').addEventListener('click', function (e) {
+  var target = e.target || e.srcElement;
+  if (!target.classList.contains('exit-trade-btn')) { return; }
+  pendingExitTicket = target.getAttribute('data-ticket') || '';
+  byId('exitPhraseInput').value = '';
+  try { byId('exitPhraseInput').focus(); } catch (e) {}
+  byId('closeTradeModal').showModal();
+});
 byId('closeDeclineModalBtn').addEventListener('click', function () { closeDialog('declineModal'); });
 byId('cancelDeclineBtn').addEventListener('click', function () { closeDialog('declineModal'); });
+byId('closeCloseTradeModalBtn').addEventListener('click', function () { closeDialog('closeTradeModal'); });
+byId('cancelCloseTradeBtn').addEventListener('click', function () { closeDialog('closeTradeModal'); });
+byId('exitPhraseInput').addEventListener('input', function (e) {
+  var target = e.target || e.srcElement;
+  byId('confirmCloseTradeBtn').disabled = String(target.value).replace(/^\s+|\s+$/g, '') !== 'END TRADE';
+});
+byId('confirmCloseTradeBtn').addEventListener('click', function () {
+  var phrase = String(byId('exitPhraseInput').value).replace(/^\s+|\s+$/g, '');
+  if (phrase !== 'END TRADE') { alert('Phrase must be END TRADE'); return; }
+  if (!pendingExitTicket) { alert('No position selected'); return; }
+  postJson('/api/agent/close-position', { confirm: phrase, ticket: pendingExitTicket }, function (err, result) {
+    if (err) { alert(err.message); return; }
+    closeDialog('closeTradeModal');
+    if (result && result.ok) {
+      toast('Position closed (ticket ' + pendingExitTicket + ').');
+    } else {
+      toast('Close failed; see terminal for details.');
+    }
+  });
+});
 byId('shutdownDashboardBtn').addEventListener('click', function () { byId('shutdownModal').showModal(); });
 byId('closeShutdownModalBtn').addEventListener('click', function () { closeDialog('shutdownModal'); });
 byId('cancelShutdownBtn').addEventListener('click', function () { closeDialog('shutdownModal'); });
@@ -667,6 +745,18 @@ h1,h2,h3{margin:0;font-weight:700}
 .evidence-item{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px}
 .evidence-item dt{color:var(--muted);font-size:10px;text-transform:uppercase}
 .evidence-item dd{margin:3px 0 0;font-size:11px}
+.layout{display:grid;grid-template-columns:330px 1fr 370px;gap:14px;margin-top:12px;align-items:start}
+.agent-steps ol{list-style:none}
+.terminal-panel{max-height:420px}
+#terminal{max-height:420px;overflow-y:auto}
+.live-trades-card{padding:12px}
+.live-trades{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto;margin-top:4px}
+.trade-row{display:grid;grid-template-columns:auto auto auto auto auto auto;gap:6px;align-items:center;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:11px}
+.trade-row.win{border-color:#166534}
+.trade-row.loss{border-color:#7f1d1d}
+.pnl-positive{color:#4ade80}.pnl-negative{color:#f87171}
+.exit-trade-btn{background:transparent;color:#fbbf24;border:1px solid #713f12;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:700;cursor:pointer}
+.exit-trade-btn:hover{color:#fef3c7;border-color:#f59e0b;box-shadow:0 0 10px rgba(245,158,11,.35)}
 .terminal-panel{display:flex;flex-direction:column;padding:12px;gap:8px}
 .terminal-header{display:flex;align-items:center;justify-content:space-between}
 #terminal{background:#050505;border:1px solid var(--border);border-radius:10px;color:#a3e635;font-family:'Cascadia Code',Consolas,monospace;font-size:11px;line-height:1.45;overflow:auto;flex:1;min-height:220px;padding:10px;white-space:pre-wrap}
@@ -843,6 +933,14 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
       <div class="chart-footer"><span id="chartFooterText">bars will appear when the bot writes them to the ledger</span><span id="chartTimeRange" class="muted"></span></div>
     </div>
 
+    <div class="panel live-trades-card" id="liveTradesCard">
+      <div class="chart-header">
+        <h2 class="panel-title">Live Positions</h2>
+        <span id="liveTradesCount" class="badge badge-neutral">0 open</span>
+      </div>
+      <div id="liveTradesList" class="live-trades"><p class="muted">No open positions.</p></div>
+    </div>
+
     <div class="panel evidence-grid" id="evidenceGrid">
       <div class="evidence-item"><dt>Latest decisions</dt><dd id="latestDecisions" class="muted">—</dd></div>
       <div class="evidence-item"><dt>Recent orders</dt><dd id="recentOrders" class="muted">—</dd></div>
@@ -907,6 +1005,17 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
       <p class="danger-text">This stops the local dashboard HTTP server and the local agent (if running). The SQLite ledger is not affected; your bot state is preserved.</p>
       <p class="muted">Reopen the dashboard with the <strong>Gold Bot Dashboard</strong> shortcut on your Desktop, or by running <code>goldbot-launch.bat</code>.</p>
       <div class="modal-actions"><button class="btn btn-secondary" id="cancelShutdownBtn" type="button">Cancel</button><button class="btn btn-danger" id="confirmShutdownBtn" type="button">Shut it down</button></div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="closeTradeModal" class="modal">
+  <div class="modal-content modal-narrow">
+    <div class="modal-header"><h2>End trade</h2><button class="icon-btn" id="closeCloseTradeModalBtn" type="button" aria-label="Close">×</button></div>
+    <div class="modal-body">
+      <p class="danger-text">This will close the selected MT5 position now at market. Risk exits remain veto-immune; this is an explicit operator override.</p>
+      <label class="field"><span>Type END TRADE to authorize</span><input id="exitPhraseInput" type="text" autocomplete="off" spellcheck="false" placeholder="END TRADE"></label>
+      <div class="modal-actions"><button class="btn btn-secondary" id="cancelCloseTradeBtn" type="button">Cancel</button><button class="btn btn-execute" id="confirmCloseTradeBtn" type="button" disabled>Close trade</button></div>
     </div>
   </div>
 </dialog>

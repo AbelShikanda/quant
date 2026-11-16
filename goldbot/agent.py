@@ -11,7 +11,8 @@ from __future__ import annotations
 import signal
 import sys
 import time
-from datetime import timedelta
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,8 +28,89 @@ def _log(message: str) -> None:
     print(message, flush=True)
 
 
+def _sync_open_positions(
+    feed: MT5DataFeed,
+    ledger: Ledger,
+    scope_id: str,
+    execution_minutes: int,
+) -> None:
+    """Reconcile MT5 open positions into the ledger.
+
+    Positions still open in MT5 but missing from the ledger are inserted;
+    positions present in the ledger but no longer open in MT5 are closed.
+    """
+    rows = ledger.connection.execute(
+        """
+        SELECT position_id, side, volume, open_price, stop_loss, take_profit
+        FROM positions
+        WHERE close_time_utc IS NULL AND state = 'DEMO_OPEN'
+        """
+    ).fetchall()
+    open_rows = {str(row["position_id"]): dict(row) for row in rows}
+    open_tickets = {}
+    for position in feed.open_positions():
+        ticket = str(position.get("ticket"))
+        if ticket:
+            open_tickets[ticket] = position
+
+        position_id = f"broker-{ticket}" if ticket else None
+        if position_id and position_id not in open_rows:
+            side = "LONG" if int(position.get("type", 0)) == 0 else "SELL"
+            open_price = float(position.get("price_open") or 0.0)
+            volume = float(position.get("volume") or 0.0)
+            stop_loss = float(position.get("sl") or 0.0) or None
+            take_profit = float(position.get("tp") or 0.0) or None
+            ledger.connection.execute(
+                """
+                INSERT OR IGNORE INTO positions
+                    (position_id, symbol, side, volume, open_price,
+                     open_time_utc, stop_loss, take_profit, state,
+                     broker_position_ticket, raw_position_json)
+                VALUES (?, 'XAUUSD', ?, ?, ?, ?, ?, ?, 'DEMO_OPEN', ?, ?)
+                """,
+                (
+                    position_id,
+                    side,
+                    volume,
+                    open_price,
+                    datetime.fromtimestamp(int(position.get("time", 0)), tz=timezone.utc),
+                    stop_loss,
+                    take_profit,
+                    int(position.get("ticket") or 0),
+                    json.dumps(position, ensure_ascii=False, default=str),
+                ),
+            )
+            ledger.log_event(
+                level="INFO",
+                component="agent",
+                event_type="position_synced",
+                message=f"synced MT5 position ticket={ticket} into ledger",
+                correlation_id=scope_id,
+                payload={"ticket": ticket, "side": side},
+            )
+
+    broker_tickets = set(open_tickets.keys())
+    for position_id, row in list(open_rows.items()):
+        ticket = str((row["position_id"] or "")).replace("broker-", "", 1)
+        if ticket not in broker_tickets:
+            tick = feed.symbol_tick()
+            price = float(tick.get("bid") or row["open_price"])
+            side = str(row["side"]).upper()
+            direction = 1 if side == "LONG" else -1
+            realized_pnl = (price - float(row["open_price"])) * float(row["volume"]) * 100.0 * direction
+            ledger.connection.execute(
+                """
+                UPDATE positions
+                SET close_price = ?, close_time_utc = ?, close_reason = 'closed_by_broker',
+                    state = 'DEMO_CLOSED', realized_pnl = ?
+                WHERE position_id = ?
+                """,
+                (price, utc_now().isoformat(), realized_pnl, position_id),
+            )
+    ledger.connection.commit()
+
+
 def run_agent_loop(
-    *,
     manifest: dict[str, Any],
     macro_dir: str | Path,
     ledger_path: str | Path,
@@ -157,6 +239,7 @@ def run_agent_loop(
                         h4 = BarSeries(active_feed.fetch_bars("H4", context_bars), "H4")
                         macro_store = load_macro_directory(macro_dir)
                         tick = active_feed.symbol_tick()
+                        _sync_open_positions(active_feed, ledger, scope_id, execution_minutes)
                         latest_bar = _latest_closed_bar(
                             m15,
                             tick=tick,
