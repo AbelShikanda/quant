@@ -35,6 +35,7 @@ DEFAULT_CONTEXT_BARS = 500
 DEFAULT_INTERVAL_SECONDS = 15.0
 STARTUP_LOG_LINES = 300
 PYTHON = "python"
+EXECUTION_LEDGER = "reports/demo.execution.ledger.sqlite"
 CSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
 
 _AGENT_LOCK = threading.Lock()
@@ -1028,11 +1029,10 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
             if phrase != "SEND DEMO ORDER":
                 _json_response(self, HTTPStatus.BAD_REQUEST, {"v": 1, "ok": False, "error": "confirm must be SEND DEMO ORDER"})
                 return
-            ledger = self.server.ledger_path
             cmd = _demo_send_command(
                 profile_rel=self.server.profile,
                 macro_dir=self.server.macro_dir,
-                ledger_path=str(ledger),
+                ledger_path=EXECUTION_LEDGER,
                 manifest_rel=self.server.manifest_rel,
                 broker_utc_offset_minutes=self.server.broker_utc_offset_minutes,
                 expected_login=self.server.expected_login,
