@@ -150,6 +150,13 @@ byId('closeEvidenceDrawerBtn').addEventListener('click', () => closeDialog('evid
 byId('declineBtn').addEventListener('click', () => byId('declineModal').showModal());
 byId('closeDeclineModalBtn').addEventListener('click', () => closeDialog('declineModal'));
 byId('cancelDeclineBtn').addEventListener('click', () => closeDialog('declineModal'));
+byId('shutdownDashboardBtn').addEventListener('click', () => byId('shutdownModal').showModal());
+byId('closeShutdownModalBtn').addEventListener('click', () => closeDialog('shutdownModal'));
+byId('cancelShutdownBtn').addEventListener('click', () => closeDialog('shutdownModal'));
+byId('confirmShutdownBtn').addEventListener('click', async () => {
+  try { await postJson('/api/server/shutdown', { confirm: 'SHUT DASHBOARD' }); } catch (e) { /* server may exit before the response */ }
+  document.body.innerHTML = '<div class="panel" style="padding:40px;text-align:center;margin:48px auto;max-width:520px"><h2>Dashboard is shutting down</h2><p class="muted">You can close this tab. Reopen the dashboard with the Gold Bot Dashboard shortcut on your Desktop.</p></div>';
+});
 byId('confirmDeclineBtn').addEventListener('click', async () => { const reason = byId('declineReasonInput').value.trim(); if (!reason) { alert('Reason required'); return; } try { await postJson('/api/agent/decline', { reason }); byId('declineModal').close(); byId('declineReasonInput').value = ''; } catch (e) { alert(e.message); } });
 byId('acceptBtn').addEventListener('click', () => byId('executeModal').showModal());
 byId('closeExecuteModalBtn').addEventListener('click', () => closeDialog('executeModal'));
@@ -306,6 +313,7 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
   <div class="controls">
     <button id="startAgentBtn" class="btn btn-primary" type="button">{'Running' if running else 'Start Agent'}</button>
     <button id="stopAgentBtn" class="btn btn-danger" type="button" {'disabled' if not running else ''}>Stop Agent</button>
+    <button id="shutdownDashboardBtn" class="btn btn-danger btn-shutdown" type="button">Shutdown Dashboard</button>
   </div>
 </header>
 
@@ -423,6 +431,17 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
     <div class="modal-body">
       <label class="field"><span>Reason</span><textarea id="declineReasonInput" rows="3" placeholder="e.g. fundamental gate still failing; wait for fresh broad USD print"></textarea></label>
       <div class="modal-actions"><button class="btn btn-secondary" id="cancelDeclineBtn" type="button">Cancel</button><button class="btn btn-danger" id="confirmDeclineBtn" type="button">Log decline</button></div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="shutdownModal" class="modal">
+  <div class="modal-content modal-narrow">
+    <div class="modal-header"><h2>Shut down the dashboard</h2><button class="icon-btn" id="closeShutdownModalBtn" type="button" aria-label="Close">×</button></div>
+    <div class="modal-body">
+      <p class="danger-text">This stops the local dashboard HTTP server and the local agent (if running). The SQLite ledger is not affected; your bot state is preserved.</p>
+      <p class="muted">Reopen the dashboard with the <strong>Gold Bot Dashboard</strong> shortcut on your Desktop, or by running <code>goldbot-launch.bat</code>.</p>
+      <div class="modal-actions"><button class="btn btn-secondary" id="cancelShutdownBtn" type="button">Cancel</button><button class="btn btn-danger" id="confirmShutdownBtn" type="button">Shut it down</button></div>
     </div>
   </div>
 </dialog>

@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
+import time
 
 DEFAULT_LEDGER = Path("reports/micro_50.paper.ledger.sqlite")
 DEFAULT_HOST = "127.0.0.1"
@@ -963,6 +964,21 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
                 return
             _append_log("INFO", f"decline logged: {reason}")
             _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True})
+            return
+
+        if path == "/api/server/shutdown":
+            if payload.get("confirm") != "SHUT DASHBOARD":
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"v": 1, "ok": False, "error": "confirm must be SHUT DASHBOARD"})
+                return
+            _stop_agent(self.server)
+            _append_log("INFO", "dashboard shutdown requested by user")
+
+            def _shutdown() -> None:
+                time.sleep(0.2)
+                self.server.shutdown()
+
+            threading.Thread(target=_shutdown, daemon=True).start()
+            _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True, "shutdown": True, "message": "dashboard is shutting down"})
             return
 
         _json_response(self, HTTPStatus.NOT_FOUND, {"v": 1, "ok": False, "error": "not found"})

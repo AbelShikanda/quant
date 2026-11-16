@@ -414,3 +414,34 @@ def test_post_requires_json_content_type(tmp_path: Path) -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_shutdown_endpoint_stops_server(tmp_path: Path) -> None:
+    path = tmp_path / "shutdown.sqlite"
+    _populate_ledger(path, finished=False, mode="demo_live")
+    server = make_server(ledger_path=path, host="127.0.0.1", port=0, max_rows=5)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        payload = json.dumps({"confirm": "SHUT DASHBOARD"}).encode("utf-8")
+        req = urllib.request.Request(
+            base + "/api/server/shutdown",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3) as response:
+            body = json.loads(response.read().decode("utf-8"))
+            assert response.status == 200
+            assert body["v"] == 1
+            assert body["ok"] is True
+            assert body["shutdown"] is True
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    finally:
+        try:
+            server.shutdown()
+        except Exception:  # noqa: BLE001 - server may already be stopped
+            pass
+        server.server_close()
