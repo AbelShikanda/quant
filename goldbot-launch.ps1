@@ -30,6 +30,7 @@ function Open-Dashboard {
         Start-Process -FilePath $python -ArgumentList @(
             "-m", "goldbot.cli", "dashboard-live",
             "--ledger", $dashboardLedger,
+            "--profile", "config/profiles/micro_50.yaml",
             "--host", "127.0.0.1",
             "--port", "$port"
         ) -WorkingDirectory $root
