@@ -199,6 +199,12 @@ class PaperRuntime:
             },
             logged_at_utc=self.started_at_utc,
         )
+        self.ledger.record_chart_bars(
+            scope_id=self.scope_id,
+            timeframe="M15",
+            bars=self.execution_bars.bars,
+            recorded_at_utc=utc_now(),
+        )
         for as_of in times:
             self.process_bar(as_of)
         self._close_open_position_at_end()

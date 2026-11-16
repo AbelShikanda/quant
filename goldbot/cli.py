@@ -20,6 +20,7 @@ from .data import (
     make_synthetic_bars,
     make_synthetic_macro_store,
 )
+from .agent import run_agent_loop
 from .demo import run_demo_order, run_demo_preflight
 from .ledger import Ledger
 from .live_dashboard import serve_live_dashboard
@@ -489,6 +490,45 @@ def _cmd_demo_send(args: argparse.Namespace) -> int:
     return 0 if (result.sent or not result.preflight.send_ready) else 2
 
 
+def _cmd_agent(args: argparse.Namespace) -> int:
+    """Run the guarded agent loop. Never sends orders."""
+    try:
+        manifest = _load_manifest_for_run(args)
+        return run_agent_loop(
+            manifest=manifest,
+            macro_dir=args.macro_dir,
+            ledger_path=args.ledger,
+            broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+            bars=args.bars,
+            context_bars=args.context_bars,
+            interval_seconds=args.interval_seconds,
+            expected_login=args.expected_login,
+            stop_file=args.stop_file,
+            max_iterations=args.max_iterations,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI must report, not crash
+        print(f"agent failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+
+def _cmd_decline(args: argparse.Namespace) -> int:
+    """Log a human decline decision to the ledger."""
+    try:
+        with Ledger(args.ledger) as ledger:
+            ledger.log_event(
+                level="INFO",
+                component="launcher",
+                event_type="decline_opportunity",
+                message=args.reason,
+                payload={"reason": args.reason},
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"decline failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    print("decline logged")
+    return 0
+
+
 def _cmd_walkforward(args: argparse.Namespace) -> int:
     try:
         manifest, execution, context, macro_store = _build_run_inputs(args)
@@ -647,6 +687,14 @@ def _cmd_dashboard_live(args: argparse.Namespace) -> int:
             port=args.port,
             refresh_seconds=args.refresh_seconds,
             max_rows=args.max_rows,
+            profile=args.profile,
+            macro_dir=args.macro_dir,
+            manifest_rel=args.manifest_rel,
+            broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+            expected_login=args.expected_login,
+            interval_seconds=args.interval_seconds,
+            bars=args.bars,
+            context_bars=args.context_bars,
             open_browser=args.open,
         )
     except Exception as exc:  # noqa: BLE001 - CLI must report, not hide, the failure
@@ -887,6 +935,38 @@ def build_parser() -> argparse.ArgumentParser:
     order.add_argument("--json", action="store_true", help="print summary JSON")
     order.set_defaults(func=_cmd_demo_send)
 
+    agent_cmd = subparsers.add_parser(
+        "agent",
+        help="run the guarded agent loop (connect MT5, evaluate strategy, write ledger)",
+    )
+    agent_cmd.add_argument("--manifest", required=True, help="path to scope YAML")
+    agent_cmd.add_argument(
+        "--account-profile",
+        help="explicit account-profile YAML overlay, e.g. config/profiles/standard_1k.yaml",
+    )
+    agent_cmd.add_argument(
+        "--macro-dir",
+        required=True,
+        help="local macro CSV/XLSX directory (real data required)",
+    )
+    agent_cmd.add_argument("--ledger", default="reports/agent.ledger.sqlite", help="SQLite ledger for the agent")
+    agent_cmd.add_argument("--broker-utc-offset-minutes", type=int, default=120, help="broker server offset from UTC")
+    agent_cmd.add_argument("--bars", type=int, default=1600, help="M15 bars to load")
+    agent_cmd.add_argument("--context-bars", type=int, default=500, help="H4 bars to load")
+    agent_cmd.add_argument("--interval-seconds", type=float, default=15.0, help="seconds between agent evaluations")
+    agent_cmd.add_argument("--expected-login", type=int, required=True, help="required demo account login")
+    agent_cmd.add_argument("--stop-file", help="agent exits when this file exists")
+    agent_cmd.add_argument("--max-iterations", type=int, help="stop after N iterations (testing)")
+    agent_cmd.set_defaults(func=_cmd_agent)
+
+    decline = subparsers.add_parser(
+        "decline",
+        help="log a human decision to decline the current opportunity",
+    )
+    decline.add_argument("--ledger", required=True, help="SQLite ledger path")
+    decline.add_argument("--reason", required=True, help="reason for declining")
+    decline.set_defaults(func=_cmd_decline)
+
     demo = subparsers.add_parser(
         "demo-param",
         help="show that a manifest parameter change alters behavior without a code edit",
@@ -919,7 +999,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live.add_argument(
         "--ledger",
-        default=str(Path("reports/goldbot.ledger.sqlite")),
+        default=str(Path("reports/micro_50.paper.ledger.sqlite")),
         help="path to the SQLite ledger (read-only; never created by the dashboard)",
     )
     live.add_argument(
@@ -927,9 +1007,46 @@ def build_parser() -> argparse.ArgumentParser:
         default="127.0.0.1",
         help="loopback host to bind (127.0.0.1 or localhost)",
     )
-    live.add_argument("--port", type=int, default=8000)
+    live.add_argument("--port", type=int, default=8010)
     live.add_argument("--refresh-seconds", type=float, default=2.0)
     live.add_argument("--max-rows", type=int, default=25)
+    live.add_argument(
+        "--profile",
+        default="config/profiles/standard_1k.yaml",
+        help="account profile used by the agent and guarded demo order",
+    )
+    live.add_argument(
+        "--macro-dir",
+        default="data/raw/macro",
+        help="local macro CSV/XLSX directory used by the agent",
+    )
+    live.add_argument(
+        "--manifest-rel",
+        default="config/scope.gold.v1.yaml",
+        help="manifest path relative to the project root",
+    )
+    live.add_argument(
+        "--broker-utc-offset-minutes",
+        type=int,
+        default=120,
+        help="broker server offset from UTC (human-confirmed)",
+    )
+    live.add_argument(
+        "--expected-login",
+        type=int,
+        default=106806652,
+        help="required demo account login",
+    )
+    live.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=15.0,
+        help="seconds between agent evaluations",
+    )
+    live.add_argument("--bars", type=int, default=1600, help="M15 bars for the agent")
+    live.add_argument(
+        "--context-bars", type=int, default=500, help="H4 bars for the agent"
+    )
     live.add_argument(
         "--open",
         action="store_true",

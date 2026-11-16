@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -233,8 +234,8 @@ def test_load_state_marks_completed_paper_run_not_stale(tmp_path: Path) -> None:
     assert state["stale"] is False
     assert state["final_equity"] == 1002.55
     page = render_page(state, refresh_seconds=2)
-    assert "PAPER REPLAY" in page
-    assert "Run finished" in page
+    assert "Paper Replay" in page
+    assert "GOLD BOT" in page
 
 
 def test_read_only_state_does_not_change_ledger_bytes(tmp_path: Path) -> None:
@@ -271,18 +272,21 @@ def test_read_only_connection_works_while_writer_is_open(tmp_path: Path) -> None
         assert state["counts"]["logs"] == 1
 
 
-def test_render_page_is_read_only_and_has_no_script(tmp_path: Path) -> None:
+def test_render_page_is_agentic_and_has_agent_markup(tmp_path: Path) -> None:
     path = tmp_path / "render.sqlite"
     started = _populate_ledger(path, finished=False, mode="demo_live")
     state = load_state(path, now=started + timedelta(seconds=1))
     page = render_page(state, refresh_seconds=2)
-    assert "Live Read-Only Dashboard" in page
-    assert "Read-only local dashboard" in page
-    assert "DEMO LIVE" in page
-    assert "Open position" in page
-    assert "pos-1" in page
-    assert "<script" not in page.lower()
-    assert 'http-equiv="refresh" content="2"' in page
+    assert "GOLD BOT" in page
+    assert "Agent Terminal" in page
+    assert "XAUUSD" in page
+    assert 'id="startAgentBtn"' in page
+    assert 'id="stopAgentBtn"' in page
+    assert 'id="priceChart"' in page
+    assert 'id="terminal"' in page
+    assert 'id="acceptBtn"' in page
+    assert "<script" in page.lower()
+    assert 'Accept &amp; Execute' in page
 
 
 def test_http_server_serves_page_and_state(tmp_path: Path) -> None:
@@ -297,16 +301,17 @@ def test_http_server_serves_page_and_state(tmp_path: Path) -> None:
             page = response.read().decode("utf-8")
             assert response.status == 200
             assert "text/html" in response.headers["Content-Type"]
-            assert "Live Read-Only Dashboard" in page
+            assert "GOLD BOT" in page
         with urllib.request.urlopen(base + "/api/state", timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
             assert response.status == 200
-            assert payload["mode"] == "demo_live"
-            assert payload["server"]["host"] == "127.0.0.1"
-            assert payload["open_position"]["position_id"] == "pos-1"
+            assert payload["v"] == 1
+            assert payload["state"]["mode"] == "demo_live"
+            assert payload["state"]["open_position"]["position_id"] == "pos-1"
         with urllib.request.urlopen(base + "/health", timeout=5) as response:
             health = json.loads(response.read().decode("utf-8"))
             assert health == {
+                "v": 1,
                 "ok": True,
                 "read_only": True,
                 "no_mt5_connection": True,
@@ -343,3 +348,69 @@ def test_cli_parser_wires_dashboard_live() -> None:
     assert args.port == 0
     assert args.refresh_seconds == 1.5
     assert args.max_rows == 10
+
+
+def _post(url: str, payload, *, content_type: str = "application/json"):
+    data = json.dumps(payload).encode("utf-8") if not isinstance(payload, (bytes, str)) else payload
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": content_type}, method="POST")
+    return urllib.request.urlopen(req, timeout=5)
+
+
+def test_no_mt5_import_in_live_dashboard() -> None:
+    source = Path("goldbot/live_dashboard.py").read_text(encoding="utf-8")
+    assert "MetaTrader5" not in source
+
+
+def test_execute_requires_send_demo_order_phrase(tmp_path: Path) -> None:
+    path = tmp_path / "exec.sqlite"
+    _populate_ledger(path, finished=False, mode="demo_live")
+    server = make_server(ledger_path=path, host="127.0.0.1", port=0, max_rows=5)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            _post(base + "/api/agent/execute", {"confirm": "send demo order"})
+        assert exc_info.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_decline_logs_reason(tmp_path: Path) -> None:
+    path = tmp_path / "decline.sqlite"
+    _populate_ledger(path, finished=False, mode="demo_live")
+    server = make_server(ledger_path=path, host="127.0.0.1", port=0, max_rows=5)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        response = _post(base + "/api/agent/decline", {"reason": "fundamental gate still failing"})
+        payload = json.loads(response.read().decode("utf-8"))
+        assert payload["ok"] is True
+        state = load_state(path)
+        assert any(log["message"] == "fundamental gate still failing" for log in state["logs"])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_post_requires_json_content_type(tmp_path: Path) -> None:
+    path = tmp_path / "decline2.sqlite"
+    _populate_ledger(path, finished=False, mode="demo_live")
+    server = make_server(ledger_path=path, host="127.0.0.1", port=0, max_rows=5)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            _post(base + "/api/agent/decline", b"reason=test", content_type="application/x-www-form-urlencoded")
+        assert exc_info.value.code == 415
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

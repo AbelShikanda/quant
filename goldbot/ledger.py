@@ -431,6 +431,43 @@ class Ledger(AbstractContextManager["Ledger"]):
         )
         self.connection.commit()
 
+    def record_chart_bars(
+        self,
+        *,
+        scope_id: str,
+        timeframe: str,
+        bars: list[Any],
+        recorded_at_utc: datetime | None = None,
+    ) -> None:
+        """Upsert OHLCV bars so read-only dashboards can render them."""
+        if not bars:
+            return
+        now = ensure_utc(recorded_at_utc or utc_now()).isoformat()
+        self.connection.executemany(
+            """
+            INSERT OR REPLACE INTO chart_bars
+                (scope_id, timeframe, bar_time_utc,
+                 open_price, high_price, low_price, close_price,
+                 volume, recorded_at_utc)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    scope_id,
+                    str(timeframe),
+                    ensure_utc(bar.time_utc).isoformat(),
+                    float(bar.open),
+                    float(bar.high),
+                    float(bar.low),
+                    float(bar.close),
+                    float(getattr(bar, "volume", 0.0) or 0.0),
+                    now,
+                )
+                for bar in bars
+            ],
+        )
+        self.connection.commit()
+
     # ------------------------------------------------------------------
     # Logs and incidents
     # ------------------------------------------------------------------

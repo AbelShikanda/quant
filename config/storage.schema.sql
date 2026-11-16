@@ -173,4 +173,19 @@ CREATE INDEX IF NOT EXISTS idx_positions_open_time ON positions(open_time_utc);
 CREATE INDEX IF NOT EXISTS idx_logs_logged_at ON logs(logged_at_utc);
 CREATE INDEX IF NOT EXISTS idx_incidents_opened_at ON incidents(opened_at_utc);
 CREATE INDEX IF NOT EXISTS idx_macro_series_time ON macro_observations(series_id, knowledge_time_utc);
+CREATE TABLE IF NOT EXISTS chart_bars (
+    scope_id TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    bar_time_utc TEXT NOT NULL,
+    open_price REAL NOT NULL,
+    high_price REAL NOT NULL,
+    low_price REAL NOT NULL,
+    close_price REAL NOT NULL,
+    volume REAL,
+    recorded_at_utc TEXT NOT NULL,
+    PRIMARY KEY (scope_id, timeframe, bar_time_utc)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chart_bars_time ON chart_bars(timeframe, bar_time_utc);
+
 CREATE INDEX IF NOT EXISTS idx_strategy_decisions_as_of ON strategy_decisions(as_of_utc);
