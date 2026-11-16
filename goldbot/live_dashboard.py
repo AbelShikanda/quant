@@ -600,10 +600,104 @@ def load_state(
 # HTTP server and guarded agent control plane
 # ---------------------------------------------------------------------------
 from .live_dashboard_ui import render_page  # noqa: E402
-
-import sys
+from .profiles import load_profile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+
+_PROFILE_KEYS = {
+    "micro_50": "config/profiles/micro_50.yaml",
+    "micro_100": "config/profiles/micro_100.yaml",
+    "standard_1k": "config/profiles/standard_1k.yaml",
+}
+
+
+def _profile_key(profile_path: str) -> str:
+    target = Path(profile_path)
+    for key, rel in _PROFILE_KEYS.items():
+        candidate = ROOT / rel
+        try:
+            if target.resolve() == candidate.resolve() or profile_path.replace("\\", "/") == rel:
+                return key
+        except OSError:
+            continue
+    return target.stem
+
+
+def _profile_spec(profile_path: str) -> dict[str, Any]:
+    path = ROOT / Path(profile_path)
+    try:
+        profile = load_profile(path)
+    except Exception as exc:  # noqa: BLE001 - dashboard must report, not crash
+        return {
+            "key": _profile_key(profile_path),
+            "label": _profile_key(profile_path),
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "spec_rows": [],
+        }
+    key = _profile_key(profile_path)
+    overrides = _json_dict(profile.get("overrides"))
+    market = _json_dict(overrides.get("market"))
+    risk = _json_dict(overrides.get("risk"))
+    sizing = _json_dict(_json_dict(overrides.get("strategy")).get("sizing"))
+    high_risk = bool(profile.get("high_risk_override", False))
+    promotion_eligible = bool(profile.get("promotion_eligible", True))
+    description = str(profile.get("description", "")).strip()
+
+    if key == "micro_50":
+        select_summary = (
+            "Selecting: smallest account that can hold the broker minimum; 100:1 leverage; "
+            "~19–21% one-stop risk; $50 account."
+        )
+        forgo_summary = (
+            "Forgoing: promotion eligibility, 5:1 discipline, and any drawdown limit inside 20%. "
+            "HIGH RISK — not promotion-eligible."
+        )
+        tone = "red"
+    elif key == "micro_100":
+        select_summary = (
+            "Selecting: $100 account; 50:1 leverage; ~9.7% one-stop risk; broker minimum held."
+        )
+        forgo_summary = (
+            "Forgoing: promotion eligibility, 5:1 discipline, and a stop risk under 10%. "
+            "HIGH RISK — not promotion-eligible."
+        )
+        tone = "red"
+    else:
+        select_summary = (
+            "Selecting: $1,000 promotion-eligible demo; 5:1 leverage; 0.25% risk per trade; "
+            "1.25% min-lot guard."
+        )
+        forgo_summary = (
+            "Forgoing: ability to hold 0.01 XAUUSD on a sub-$776 account at 5:1. "
+            "The only promotion-eligible profile."
+        )
+        tone = "green"
+
+    def _row(label, value, tone=""):
+        return {"label": label, "value": value, "tone": tone}
+
+    spec_rows = [
+        _row("Bot leverage cap", f"{risk.get('leverage_cap', 'n/a')}:1", tone),
+        _row("Bot notional cap", f"{market.get('max_notional_exposure_ratio', 'n/a')}x equity", tone),
+        _row("Risk per trade", f"{risk.get('per_trade_equity_pct', 'n/a')}%", tone),
+        _row("Minimum-lot risk guard", f"{sizing.get('min_lot_risk_cap_pct', 'n/a')}%", tone),
+        _row("Daily loss halt", f"{risk.get('daily_loss_halt_pct', 'n/a')}%", "amber"),
+        _row("Max drawdown flatten/halt", f"{risk.get('max_drawdown_flatten_pct', 'n/a')}%", "amber"),
+        _row("Promotion-eligible", "Yes" if promotion_eligible else "No", "green" if promotion_eligible else "red"),
+        _row("High-risk override", "Yes" if high_risk else "No", "red" if high_risk else ""),
+    ]
+    return {
+        "ok": True,
+        "key": key,
+        "label": key.upper(),
+        "description": description,
+        "high_risk_override": high_risk,
+        "promotion_eligible": promotion_eligible,
+        "select_summary": select_summary,
+        "forgo_summary": forgo_summary,
+        "spec_rows": spec_rows,
+    }
 
 
 def _python_command() -> list[str]:
@@ -799,7 +893,7 @@ class LiveDashboardServer(ThreadingHTTPServer):
         ledger_path: str | Path,
         refresh_seconds: float,
         max_rows: int,
-        profile: str = "config/profiles/standard_1k.yaml",
+        profile: str = "config/profiles/micro_50.yaml",
         macro_dir: str = "data/raw/macro",
         manifest_rel: str = "config/scope.gold.v1.yaml",
         broker_utc_offset_minutes: int = 120,
@@ -966,6 +1060,24 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True})
             return
 
+        if path == "/api/agent/profile":
+            key = str(payload.get("profile") or "").strip()
+            rel = _PROFILE_KEYS.get(key)
+            if rel is None:
+                _json_response(
+                    self,
+                    HTTPStatus.BAD_REQUEST,
+                    {"v": 1, "ok": False, "error": f"unknown profile: {key!r}"},
+                )
+                return
+            self.server.profile = rel
+            _json_response(
+                self,
+                HTTPStatus.OK,
+                {"v": 1, "ok": True, "profile": _profile_spec(self.server.profile)},
+            )
+            return
+
         if path == "/api/server/shutdown":
             if payload.get("confirm") != "SHUT DASHBOARD":
                 _json_response(self, HTTPStatus.BAD_REQUEST, {"v": 1, "ok": False, "error": "confirm must be SHUT DASHBOARD"})
@@ -987,13 +1099,16 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def _state(self) -> dict[str, Any]:
-        return load_state(
+        state = load_state(
             self.server.ledger_path,
             max_rows=self.server.max_rows,
             stale_after_seconds=max(30.0, self.server.refresh_seconds * 3.0),
             agent_status=_agent_status(),
             log_lines=_agent_log_lines(),
         )
+        state["profile_spec"] = _profile_spec(self.server.profile)
+        state["selected_profile"] = _profile_key(self.server.profile)
+        return state
 
     def _stream_state(self) -> None:
         self.send_response(HTTPStatus.OK)
@@ -1066,7 +1181,7 @@ def make_server(
     port: int = DEFAULT_PORT,
     refresh_seconds: float = DEFAULT_REFRESH_SECONDS,
     max_rows: int = DEFAULT_MAX_ROWS,
-    profile: str = "config/profiles/standard_1k.yaml",
+    profile: str = "config/profiles/micro_50.yaml",
     macro_dir: str = "data/raw/macro",
     manifest_rel: str = "config/scope.gold.v1.yaml",
     broker_utc_offset_minutes: int = 120,
@@ -1102,7 +1217,7 @@ def serve_live_dashboard(
     port: int = DEFAULT_PORT,
     refresh_seconds: float = DEFAULT_REFRESH_SECONDS,
     max_rows: int = DEFAULT_MAX_ROWS,
-    profile: str = "config/profiles/standard_1k.yaml",
+    profile: str = "config/profiles/micro_50.yaml",
     macro_dir: str = "data/raw/macro",
     manifest_rel: str = "config/scope.gold.v1.yaml",
     broker_utc_offset_minutes: int = 120,

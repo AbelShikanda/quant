@@ -40,8 +40,19 @@ const fmtScore = (v) => v == null ? 'n/a' : (v >= 0 ? '+' : '') + Number(v).toFi
 const fmtNum = (v, d = 2) => v == null ? 'n/a' : Number(v).toFixed(d);
 const fmtTime = (t) => { try { return new Date(t).toISOString(); } catch { return String(t); } };
 
+function renderProfileSpec(spec) {
+  const select = byId('profileSelect'); if (!select) return;
+  select.value = (spec.key || 'micro_50');
+  byId('profileDescription').textContent = spec.description || '';
+  byId('profileWarning').textContent = spec.high_risk_override ? 'HIGH RISK OVERRIDE — not promotion-eligible · one stop can be a one-fifth account loss' : 'Promotion-eligible profile';
+  const rows = (spec.spec_rows || []).map((r) => `<div class="spec-row"><dt>${escapeHtml(r.label)}</dt><dd class="${escapeHtml(r.tone || '')}">${escapeHtml(r.value)}</dd></div>`).join('');
+  byId('profileSpecList').innerHTML = rows;
+  byId('profileSelectSummary').textContent = spec.select_summary || '';
+  byId('profileForgoSummary').textContent = spec.forgo_summary || '';
+}
 function updateState(data) {
   const s = data.state || data;
+  renderProfileSpec(s.profile_spec || {});
   const agent = s.agent || {};
   const running = !!agent.running;
   const mt5Status = (s.mt5 || {}).status || 'unknown';
@@ -145,6 +156,7 @@ async function postJson(path, body) {
 function closeDialog(id) { byId(id).close(); }
 byId('startAgentBtn').addEventListener('click', async () => { try { await postJson('/api/agent/start', {}); } catch (e) { alert(e.message); } });
 byId('stopAgentBtn').addEventListener('click', async () => { try { await postJson('/api/agent/stop', {}); } catch (e) { alert(e.message); } });
+byId('profileSelect').addEventListener('change', async (e) => { try { await postJson('/api/agent/profile', { profile: e.target.value }); } catch (err) { alert(err.message); } });
 byId('reviewEvidenceBtn').addEventListener('click', () => byId('evidenceDrawer').showModal());
 byId('closeEvidenceDrawerBtn').addEventListener('click', () => closeDialog('evidenceDrawer'));
 byId('declineBtn').addEventListener('click', () => byId('declineModal').showModal());
@@ -183,6 +195,17 @@ _CSS = """
 *{box-sizing:border-box} body{margin:0;padding:18px;background:var(--bg);color:var(--text);font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 h1,h2,h3{margin:0;font-weight:700}
 .state-strip{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;position:sticky;top:8px;z-index:5}
+.profile-panel{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:14px;margin-top:12px}
+.profile-select{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:8px;font-size:13px;width:100%}
+.profile-spec{display:grid;gap:6px}
+.spec-row{display:flex;justify-content:space-between;gap:12px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11px}
+.spec-row dt{color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.spec-row dd{margin:0;font-weight:600}
+.spec-row dd.green{color:#4ade80}.spec-row dd.red{color:#f87171}.spec-row dd.amber{color:#fbbf24}
+.profile-compare{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;margin-top:10px;border-top:1px solid var(--border);padding-top:10px;font-size:11px}
+.profile-compare dt{color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.profile-compare dd{margin:0}
+.profile-warning{margin:0;font-size:11px;color:#fca5a5}
 .brand{display:flex;gap:10px;align-items:center}
 .logo{width:24px;height:24px;border-radius:7px;background:radial-gradient(circle at 40% 40%,var(--cyan),var(--gold));box-shadow:0 0 12px var(--cyan)}
 .brand-text h1{font-size:16px;letter-spacing:.08em}
@@ -316,6 +339,28 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
     <button id="shutdownDashboardBtn" class="btn btn-danger btn-shutdown" type="button">Shutdown Dashboard</button>
   </div>
 </header>
+
+<section class="panel profile-panel" id="profilePanel">
+  <div class="profile-left">
+    <h2 class="panel-title">Account Profile</h2>
+    <label class="field"><span>Profile</span>
+      <select id="profileSelect" class="profile-select">
+        <option value="micro_50">micro_50 · $50 · 100:1 · HIGH RISK</option>
+        <option value="micro_100">micro_100 · $100 · 50:1 · HIGH RISK</option>
+        <option value="standard_1k">standard_1k · $1,000 · 5:1 · promotion-eligible</option>
+      </select>
+    </label>
+    <p class="panel-subtitle" id="profileDescription"></p>
+    <p class="profile-warning" id="profileWarning"></p>
+  </div>
+  <div class="profile-right">
+    <div class="profile-spec" id="profileSpecList"></div>
+    <dl class="profile-compare">
+      <dt>You select</dt><dd id="profileSelectSummary"></dd>
+      <dt>You forgo</dt><dd id="profileForgoSummary"></dd>
+    </dl>
+  </div>
+</section>
 
 <main class="layout">
   <aside class="panel node-panel">

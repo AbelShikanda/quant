@@ -445,3 +445,72 @@ def test_shutdown_endpoint_stops_server(tmp_path: Path) -> None:
         except Exception:  # noqa: BLE001 - server may already be stopped
             pass
         server.server_close()
+
+
+def test_profile_selection_endpoint_returns_specs_and_updates_state(tmp_path: Path) -> None:
+    path = tmp_path / "profile.sqlite"
+    _populate_ledger(path, finished=False, mode="demo_live")
+    server = make_server(
+        ledger_path=path,
+        host="127.0.0.1",
+        port=0,
+        max_rows=5,
+        profile="config/profiles/micro_50.yaml",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with urllib.request.urlopen(base + "/api/state", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            spec = payload["state"]["profile_spec"]
+            assert spec["key"] == "micro_50"
+            assert spec["high_risk_override"] is True
+            assert spec["promotion_eligible"] is False
+            assert any(row["label"] == "Bot leverage cap" for row in spec["spec_rows"])
+            assert payload["state"]["selected_profile"] == "micro_50"
+
+        req = urllib.request.Request(
+            base + "/api/agent/profile",
+            data=json.dumps({"profile": "standard_1k"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            assert payload["ok"] is True
+            assert payload["profile"]["key"] == "standard_1k"
+            assert payload["profile"]["promotion_eligible"] is True
+            assert payload["profile"]["high_risk_override"] is False
+
+        with urllib.request.urlopen(base + "/api/state", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            assert payload["state"]["selected_profile"] == "standard_1k"
+            assert payload["state"]["profile_spec"]["key"] == "standard_1k"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_profile_selection_endpoint_rejects_unknown_profile(tmp_path: Path) -> None:
+    path = tmp_path / "profile2.sqlite"
+    _populate_ledger(path, finished=False, mode="demo_live")
+    server = make_server(ledger_path=path, host="127.0.0.1", port=0, max_rows=5)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        req = urllib.request.Request(
+            base + "/api/agent/profile",
+            data=json.dumps({"profile": "does_not_exist"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc_info.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

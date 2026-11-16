@@ -1012,7 +1012,7 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--max-rows", type=int, default=25)
     live.add_argument(
         "--profile",
-        default="config/profiles/standard_1k.yaml",
+        default="config/profiles/micro_50.yaml",
         help="account profile used by the agent and guarded demo order",
     )
     live.add_argument(
