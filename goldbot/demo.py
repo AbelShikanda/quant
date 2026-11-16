@@ -20,6 +20,8 @@ from .data import BarSeries, MT5DataFeed, load_macro_directory
 from .ledger import Ledger
 from .manifest import as_dict, manifest_hash
 from .strategy import StrategyEngine
+from .indicators import atr
+from .contracts import FundamentalView, TechnicalView, FusionView, OverseerDecision
 
 
 PASS = "PASS"
@@ -714,6 +716,248 @@ def run_demo_preflight(
     )
 
 
+def _build_override_preflight(
+    *,
+    manifest: dict[str, Any],
+    active_feed: MT5DataFeed,
+    ledger_text: str | None,
+    bars: int,
+    context_bars: int,
+    broker_utc_offset_minutes: int,
+    deviation_points: int,
+    magic: int,
+    expected_login: int,
+    broker_offset_confirmed: bool,
+) -> DemoPreflightResult:
+    """Synthesize a minimal ENTER_LONG-shaped preflight for an explicit emergency override.
+
+    Used only by the guarded ``demo-send --override-blocks`` path. It still refuses to
+    run on a non-demo account, on a mismatched login, or when the symbol is not
+    available, but it skips the market-condition gate (macro freshness, fusion) so the
+    operator can verify the execution chain.
+    """
+    items: list[PreflightItem] = []
+    market = as_dict(manifest.get("market"))
+    symbol_name = str(market.get("symbol", "XAUUSD"))
+    execution_minutes = 15 if str(market.get("execution_bar", "M15")).upper() == "M15" else 60
+
+    account = active_feed.account_info()
+    terminal = active_feed.terminal_info()
+    symbol = active_feed.symbol_info()
+    tick = active_feed.symbol_tick()
+
+    connected = bool(terminal.get("connected", False))
+    _add(
+        items,
+        "override_mt5",
+        PASS if connected else FAIL,
+        "terminal is connected" if connected else "terminal is not connected",
+    )
+    trade_allowed = bool(terminal.get("trade_allowed", False))
+    _add(
+        items,
+        "override_algo_trading",
+        PASS if trade_allowed else FAIL,
+        "algo trading is enabled" if trade_allowed else "algo trading is disabled",
+    )
+    api_disabled = bool(terminal.get("tradeapi_disabled", True))
+    _add(
+        items,
+        "override_python_api",
+        PASS if not api_disabled else FAIL,
+        "Python trade API is enabled" if not api_disabled else "Python trade API is disabled",
+    )
+    is_demo = account.get("trade_mode") == 0
+    _add(
+        items,
+        "override_demo_account",
+        PASS if is_demo else FAIL,
+        (
+            f"demo account {account.get('login')} on {account.get('server')}"
+            if is_demo
+            else f"account trade_mode={account.get('trade_mode')!r}; refusing to override"
+        ),
+        login=account.get("login"),
+        server=account.get("server"),
+    )
+    login_ok = expected_login is not None and account.get("login") == expected_login
+    _add(
+        items,
+        "override_expected_login",
+        PASS if login_ok else FAIL,
+        (
+            f"connected login {account.get('login')} matches expected login"
+            if login_ok
+            else f"connected login {account.get('login')} != expected {expected_login}"
+        ),
+    )
+    if not symbol:
+        _add(items, "override_symbol", FAIL, f"symbol {symbol_name} is not available")
+    else:
+        _add(
+            items,
+            "override_symbol",
+            PASS,
+            f"{symbol_name} visible={symbol.get('visible')}; symbol is available",
+        )
+
+    _add(
+        items,
+        "emergency_demo_override",
+        PASS,
+        "DEMO OVERRIDE ACTIVE - macro/fusion gates are bypassed. "
+        "An order will be placed using only the broker minimum lot.",
+    )
+    _add(
+        items,
+        "broker_time_calibration",
+        PASS if broker_offset_confirmed else FAIL,
+        (
+            f"human-confirmed broker UTC offset {broker_utc_offset_minutes} minutes"
+            if broker_offset_confirmed
+            else "broker offset was not human-confirmed; refusing to override"
+        ),
+    )
+
+    # Build enough state for a minimal ENTER_LONG-shaped order.
+    execution_bars = BarSeries(active_feed.fetch_bars("M15", bars), "M15")
+    context_bars_series = BarSeries(active_feed.fetch_bars("H4", context_bars), "H4")
+    latest_bar = _latest_closed_bar(
+        execution_bars,
+        tick=tick,
+        broker_utc_offset_minutes=broker_utc_offset_minutes,
+        execution_minutes=execution_minutes,
+    )
+    if latest_bar is None:
+        latest_bar = execution_bars.bars[-1]
+
+    try:
+        indicator_atr = atr(execution_bars, 14)
+        atr_value = float(indicator_atr[-1]) if indicator_atr else float(execution_bars.bars[-1].close) / 100.0
+    except Exception:  # noqa: BLE001 - use a safe fallback
+        atr_value = float(execution_bars.bars[-1].close) / 100.0
+    entry_price = float(tick.get("ask") or latest_bar.close)
+    stop_distance = 1.5 * atr_value
+    stop_loss = entry_price - stop_distance
+    take_profit = entry_price + 2.0 * stop_distance
+    as_of = latest_bar.time_utc + timedelta(minutes=execution_minutes)
+    equity = float(account.get("equity") or 0.0)
+
+    sizing_config = as_dict(as_dict(manifest.get("strategy")).get("sizing"))
+    min_lot = float(sizing_config.get("min_lot", 0.01))
+
+    fundamental = FundamentalView(
+        as_of_utc=as_of,
+        score=1.0,
+        components={},
+        diagnostics={},
+        missing_inputs=[],
+        stale_inputs=[],
+        is_valid=True,
+        reasons=["DEMO OVERRIDE - gates bypassed"],
+        source_versions={},
+    )
+    technical = TechnicalView(
+        as_of_utc=as_of,
+        score=1.0,
+        components={},
+        indicators={"atr": atr_value, "close": latest_bar.close},
+        entry_triggers={"override": True},
+        is_valid=True,
+        reasons=["DEMO OVERRIDE - gates bypassed"],
+        bars_used=len(execution_bars.bars),
+        context_bars_used=len(context_bars_series.bars),
+    )
+    fusion = FusionView(
+        as_of_utc=as_of,
+        combined_score=1.0,
+        fundamental_contribution=0.6,
+        technical_contribution=0.4,
+        entry_candidate=True,
+        conflict=False,
+        reasons=["DEMO OVERRIDE - gates bypassed"],
+    )
+    overseer = OverseerDecision(
+        as_of_utc=as_of,
+        decision="ENTER_LONG",
+        side="LONG",
+        confidence=1.0,
+        verdict="demo_override",
+        vetoes=[],
+        rationale="DEMO OVERRIDE - operator explicitly activated the bypass",
+        source_views={},
+    )
+    decision = StrategyDecision(
+        decision_id=hashlib.sha256(f"OVERRIDE:{as_of.isoformat()}".encode("utf-8")).hexdigest()[:16],
+        as_of_utc=as_of,
+        decision_type="ENTER_LONG",
+        side="LONG",
+        confidence=1.0,
+        combined_score=1.0,
+        fundamental=fundamental,
+        technical=technical,
+        fusion=fusion,
+        overseer=overseer,
+        exit_decision=None,
+        position_size=min_lot,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        reasons=["DEMO OVERRIDE - operator explicitly activated the bypass"],
+    )
+
+    order_request = _order_request(
+        symbol=symbol_name,
+        volume=min_lot,
+        price=entry_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        deviation_points=deviation_points,
+        magic=magic,
+        comment="goldbot DEMO OVERRIDE",
+        filling_mode=int(symbol.get("filling_mode") or 0) if symbol else 0,
+    )
+    try:
+        order_check = active_feed.check_order(order_request)
+        retcode = int(order_check.get("retcode", -1))
+        _add(
+            items,
+            "override_order_check",
+            PASS if retcode == 0 else FAIL,
+            (
+                "MT5 order_check accepted the override request"
+                if retcode == 0
+                else f"MT5 order_check rejected the override request: retcode={retcode} comment={order_check.get('comment')!r}"
+            ),
+            order_check=order_check,
+        )
+    except Exception as exc:  # noqa: BLE001
+        order_check = None
+        _add(
+            items,
+            "override_order_check",
+            BLOCKED,
+            f"order_check failed: {exc}",
+        )
+
+    return DemoPreflightResult(
+        generated_at_utc=utc_now(),
+        manifest_hash=manifest_hash(manifest),
+        scope_id=str(manifest.get("scope_id", "gold.v1")),
+        account_profile=str(manifest.get("active_account_profile", "base")),
+        high_risk_override=bool(manifest.get("profile_high_risk_override", False)),
+        promotion_eligible=bool(manifest.get("profile_promotion_eligible", True)),
+        account=account,
+        terminal=terminal,
+        symbol=symbol,
+        tick=tick,
+        items=items,
+        decision=decision,
+        order_request=order_request,
+        order_check=order_check,
+        ledger_path=ledger_text,
+    )
+
+
 def run_demo_order(
     *,
     manifest: dict[str, Any],
@@ -729,6 +973,7 @@ def run_demo_order(
     deviation_points: int = 20,
     magic: int = 20261114,
     feed: MT5DataFeed | None = None,
+    override_blocks: bool = False,
 ) -> DemoOrderResult:
     """Run preflight and, only with explicit guards, submit one demo order.
 
@@ -761,19 +1006,33 @@ def run_demo_order(
     owns_feed = feed is None
     ledger_text = str(ledger_path)
     try:
-        preflight = run_demo_preflight(
-            manifest=manifest,
-            macro_dir=macro_dir,
-            ledger_path=ledger_path,
-            bars=bars,
-            context_bars=context_bars,
-            broker_utc_offset_minutes=broker_utc_offset_minutes,
-            deviation_points=deviation_points,
-            magic=magic,
-            expected_login=expected_login,
-            broker_offset_confirmed=broker_offset_confirmed,
-            feed=active_feed,
-        )
+        if override_blocks:
+            preflight = _build_override_preflight(
+                manifest=manifest,
+                active_feed=active_feed,
+                ledger_text=ledger_text,
+                bars=bars,
+                context_bars=context_bars,
+                broker_utc_offset_minutes=broker_utc_offset_minutes,
+                deviation_points=deviation_points,
+                magic=magic,
+                expected_login=expected_login,
+                broker_offset_confirmed=broker_offset_confirmed,
+            )
+        else:
+            preflight = run_demo_preflight(
+                manifest=manifest,
+                macro_dir=macro_dir,
+                ledger_path=ledger_path,
+                bars=bars,
+                context_bars=context_bars,
+                broker_utc_offset_minutes=broker_utc_offset_minutes,
+                deviation_points=deviation_points,
+                magic=magic,
+                expected_login=expected_login,
+                broker_offset_confirmed=broker_offset_confirmed,
+                feed=active_feed,
+            )
         if not preflight.send_ready:
             return DemoOrderResult(
                 preflight=preflight,
@@ -790,7 +1049,9 @@ def run_demo_order(
         idempotency_key = f"{decision.decision_id}:ENTRY"
         order_id = f"broker-order-{decision.decision_id}"
         request = dict(request)
-        request["comment"] = "goldbot demo standard_1k"
+        request["comment"] = (
+            "goldbot DEMO OVERRIDE" if override_blocks else "goldbot demo standard_1k"
+        )
         with Ledger(ledger_path) as ledger:
             existing = ledger.connection.execute(
                 """

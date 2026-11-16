@@ -69,6 +69,11 @@ function setStep(id, state) {
   if (el) { el.className = 'step step-' + state; }
 }
 
+function setNodeState(id, state) {
+  var el = byId(id);
+  if (!el) { return; }
+  el.className = 'node node-' + state;
+}
 function renderProfileSpec(spec) {
   if (!spec) { return; }
   var select = byId('profileSelect');
@@ -180,7 +185,41 @@ function updateState(data) {
   byId('oppOverseerVerdict').textContent = overseer.verdict || 'n/a';
   byId('oppGate').textContent = s.gate_blocker || 'unknown';
   byId('opportunityReason').textContent = s.gate_blocker || 'unknown';
-  byId('acceptBtn').disabled = !(fusion.entry_candidate && decision.decision_type === 'ENTER_LONG');
+  var riskState = s.risk_state || {};
+  var riskKillSwitch = !!riskState.kill_switch;
+
+  setNodeState('mt5', mt5Status === 'up' ? 'ok' : (mt5Status === 'down' ? 'fail' : 'wait'));
+  byId('kvMt5').textContent = mt5Status === 'up' ? 'feed up' : (mt5Status === 'down' ? 'feed down' : 'unknown');
+
+  var fundScore = fundamentals.score;
+  var fundMissing = fundamentals.missing_inputs || [];
+  var fundStale = fundamentals.stale_inputs || [];
+  var fundState = (fundMissing.length === 0 && fundStale.length === 0 && fundScore != null) ? 'ok' : (fundScore == null ? 'wait' : 'fail');
+  setNodeState('fundamental', fundState);
+  byId('kvFundScore').textContent = fmtScore(fundScore);
+  byId('kvFundStale').textContent = fundStale.length ? ('stale: ' + fundStale.join(', ')) : 'fresh';
+
+  var techValid = !!technicals.is_valid;
+  setNodeState('technical', techValid ? 'ok' : 'wait');
+  byId('kvTechScore').textContent = fmtScore(technicals.score);
+  var indicatorsObj = technicals.indicators || {};
+  byId('kvTechAtr').textContent = indicatorsObj.atr == null ? 'n/a' : Number(indicatorsObj.atr).toFixed(2);
+
+  setNodeState('fusion', fusion.entry_candidate ? 'ok' : 'wait');
+  byId('kvFusionScore').textContent = fmtScore(fusion.combined_score);
+  byId('kvFusionEntry').textContent = fusion.entry_candidate ? 'ENTRY' : 'WAIT';
+
+  var overseerVerdict = overseer.verdict || 'n/a';
+  setNodeState('overseer', overseerVerdict === 'approved' ? 'ok' : 'wait');
+  byId('kvOverseerVerdict').textContent = overseerVerdict;
+  byId('kvGateBlocker').textContent = s.gate_blocker || 'unknown';
+
+  setNodeState('risk', riskKillSwitch ? 'fail' : 'ok');
+  byId('kvDrawdown').textContent = drawdown == null ? 'n/a' : Number(drawdown).toFixed(2) + '%';
+  byId('kvKillSwitch').textContent = riskKillSwitch ? 'ON' : 'off';
+
+  var overrideOn = !!(byId('overrideBlocksToggle') && byId('overrideBlocksToggle').checked);
+  byId('acceptBtn').disabled = !((fusion.entry_candidate && decision.decision_type === 'ENTER_LONG') || overrideOn);
 
   var comp = '';
   var components = fundamentals.components || [];
@@ -413,6 +452,19 @@ byId('stopAgentBtn').addEventListener('click', function () {
     toast('Agent stopped.');
   });
 });
+byId('overrideBlocksToggle').addEventListener('change', function (e) {
+  var target = e.target || e.srcElement;
+  var on = !!target.checked;
+  byId('overrideBanner').style.display = on ? 'block' : 'none';
+  byId('overrideToggleLabel').className = 'override-toggle' + (on ? ' on' : '');
+  if (on) {
+    toast('DEMO OVERRIDE active - gates bypassed.');
+  } else {
+    toast('DEMO OVERRIDE off.');
+  }
+  state = JSON.parse(byId('appState').getAttribute('data-state'));
+  updateState({ v: 1, state: state });
+});
 byId('profileSelect').addEventListener('change', function (e) {
   var target = e.target || e.srcElement;
   postJson('/api/agent/profile', { profile: target.value }, function (err, result) {
@@ -455,7 +507,7 @@ byId('executePhraseInput').addEventListener('input', function (e) {
 byId('confirmExecuteBtn').addEventListener('click', function () {
   var phrase = String(byId('executePhraseInput').value).replace(/^\s+|\s+$/g, '');
   if (phrase !== 'SEND DEMO ORDER') { alert('Phrase must be SEND DEMO ORDER'); return; }
-  postJson('/api/agent/execute', { confirm: phrase }, function (err) {
+  postJson('/api/agent/execute', { confirm: phrase, override: !!byId('overrideBlocksToggle').checked }, function (err) {
     if (err) { alert(err.message); return; }
     closeDialog('executeModal');
     byId('executePhraseInput').value = '';
@@ -546,7 +598,10 @@ h1,h2,h3{margin:0;font-weight:700}
 .chip-green{border-color:#166534;box-shadow:0 0 10px rgba(34,197,94,.28)}
 .chip-red{border-color:#7f1d1d;box-shadow:0 0 10px rgba(239,68,68,.28)}
 .chip-amber{border-color:#713f12}
-.controls{display:flex;gap:8px}
+.controls{display:flex;gap:8px;align-items:center}
+.override-toggle{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:#0a0a0a;color:var(--muted);font-weight:700;font-size:11px;cursor:pointer;user-select:none;white-space:nowrap}
+.override-toggle input{accent-color:#f59e0b;cursor:pointer;transform:scale(1.2)}
+.override-toggle.on{color:#fca5a5;border-color:#7f1d1d;box-shadow:0 0 14px rgba(239,68,68,.45)}
 .layout{display:grid;grid-template-columns:330px 1fr 370px;gap:14px;margin-top:12px}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px}
 .node-panel{padding:12px}
@@ -562,6 +617,9 @@ h1,h2,h3{margin:0;font-weight:700}
 .node-amber{border-color:#713f12;box-shadow:inset 0 0 12px rgba(251,191,36,.08)}
 .node-purple{border-color:#581c87;box-shadow:inset 0 0 12px rgba(168,85,247,.08)}
 .node-green{border-color:#14532d;box-shadow:inset 0 0 12px rgba(34,197,94,.08)}
+.node-ok{border-color:#166534;box-shadow:0 0 14px rgba(34,197,94,.22)}
+.node-fail{border-color:#7f1d1d;box-shadow:0 0 14px rgba(239,68,68,.22)}
+.node-wait{border-color:#713f12;box-shadow:0 0 14px rgba(251,191,36,.22)}
 .center{display:flex;flex-direction:column;gap:12px}
 .manager-card{position:relative;display:flex;align-items:center;justify-content:center;min-height:150px;border-radius:14px;background:linear-gradient(180deg,#161616,#0a0a0a);border:1px solid var(--border);overflow:hidden}
 .manager-ring{position:absolute;border:1px solid rgba(168,85,247,.25);border-radius:50%;box-shadow:0 0 24px rgba(168,85,247,.12)}
@@ -666,8 +724,14 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
     <button id="startAgentBtn" class="btn btn-primary" type="button">{'Running' if running else 'Start Agent'}</button>
     <button id="stopAgentBtn" class="btn btn-danger" type="button" {'disabled' if not running else ''}>Stop Agent</button>
     <button id="shutdownDashboardBtn" class="btn btn-danger btn-shutdown" type="button">Shutdown Dashboard</button>
+    <label class="override-toggle" id="overrideToggleLabel" title="TESTING ONLY: bypass macro/fusion gates and allow a bare 0.01-lot demo order">
+      <input type="checkbox" id="overrideBlocksToggle" />
+      <span>DEMO OVERRIDE</span>
+    </label>
   </div>
 </header>
+
+<div id="overrideBanner" class="banner banner-danger" style="display:none">DEMO OVERRIDE ACTIVE - macro/fusion gates are bypassed. This will place a bare 0.01 XAUUSD demo order if you click Accept &amp; Execute. For testing only.</div>
 
 <section class="panel profile-panel" id="profilePanel">
   <div class="profile-left">

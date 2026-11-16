@@ -434,6 +434,7 @@ def _cmd_demo_send(args: argparse.Namespace) -> int:
             confirm_phrase=args.confirm_order,
             bars=args.bars,
             context_bars=args.context_bars,
+            override_blocks=args.override_blocks,
             deviation_points=args.deviation_points,
             magic=args.magic,
         )
@@ -930,6 +931,11 @@ def build_parser() -> argparse.ArgumentParser:
     order.add_argument(
         "--confirm-order",
         help="required confirmation phrase: SEND DEMO ORDER",
+    )
+    order.add_argument(
+        "--override-blocks",
+        action="store_true",
+        help="TESTING ONLY: bypass macro/fusion gates and place a bare 0.01-lot demo order",
     )
     order.add_argument("--report", help="write full JSON demo-order report")
     order.add_argument("--json", action="store_true", help="print summary JSON")

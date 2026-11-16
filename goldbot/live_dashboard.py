@@ -767,8 +767,9 @@ def _demo_send_command(
     manifest_rel: str,
     broker_utc_offset_minutes: int,
     expected_login: int,
+    override: bool = False,
 ) -> list[str]:
-    return _python_command() + [
+    cmd = _python_command() + [
         "-m",
         "goldbot.cli",
         "demo-send",
@@ -791,6 +792,9 @@ def _demo_send_command(
         "--report",
         str(ROOT / "reports" / "demo.execution.json"),
     ]
+    if override:
+        cmd.append("--override-blocks")
+    return cmd
 
 
 def _decline_command(
@@ -1032,6 +1036,7 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
                 manifest_rel=self.server.manifest_rel,
                 broker_utc_offset_minutes=self.server.broker_utc_offset_minutes,
                 expected_login=self.server.expected_login,
+                override=bool(payload.get("override") or False),
             )
             _AGENT_LOG.clear()
             _AGENT_LOG.append(f"[INFO] spawning guarded demo order: {' '.join(cmd)}")
