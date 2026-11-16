@@ -35,6 +35,7 @@ DEFAULT_CONTEXT_BARS = 500
 DEFAULT_INTERVAL_SECONDS = 15.0
 STARTUP_LOG_LINES = 300
 PYTHON = "python"
+CSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
 
 _AGENT_LOCK = threading.Lock()
 _AGENT_PROCESS: subprocess.Popen | None = None
@@ -382,6 +383,11 @@ def load_state(
         connection.close()
 
     run_summary = _json_dict(latest_run.get("summary_json")) if latest_run else {}
+    account_trade_mode = run_summary.get("account_trade_mode")
+    account_login = run_summary.get("account_login")
+    terminal_connected = run_summary.get("terminal_connected")
+    trade_allowed = run_summary.get("trade_allowed")
+    tradeapi_disabled = run_summary.get("tradeapi_disabled")
     snapshot_market = _json_dict(latest_snapshot.get("market_json")) if latest_snapshot else {}
     risk_state = _json_dict(snapshot_market.get("risk_state"))
     data_quality = (
@@ -591,6 +597,11 @@ def load_state(
                 "confidence": overseer.get("confidence"),
             },
             "gate_blocker": gate_blocker,
+            "account_trade_mode": account_trade_mode,
+            "account_login": account_login,
+            "agent_terminal_connected": terminal_connected,
+            "agent_trade_allowed": trade_allowed,
+            "agent_tradeapi_disabled": tradeapi_disabled,
         }
     )
     return state
@@ -929,7 +940,7 @@ def _json_response(
     handler.send_header("X-Content-Type-Options", "nosniff")
     handler.send_header(
         "Content-Security-Policy",
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
+        CSP,
     )
     handler.end_headers()
     handler.wfile.write(body)
@@ -1108,6 +1119,7 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
         )
         state["profile_spec"] = _profile_spec(self.server.profile)
         state["selected_profile"] = _profile_key(self.server.profile)
+        state["expected_login"] = self.server.expected_login
         return state
 
     def _stream_state(self) -> None:
@@ -1118,7 +1130,7 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
+            CSP,
         )
         self.end_headers()
         try:
@@ -1140,7 +1152,7 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
+            CSP,
         )
         self.end_headers()
         self.wfile.write(body)

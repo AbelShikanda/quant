@@ -122,6 +122,11 @@ def run_agent_loop(
                     "mode": "agent",
                     "scope_id": scope_id,
                     "equity": account.get("equity"),
+                    "account_login": account.get("login"),
+                    "account_trade_mode": account.get("trade_mode"),
+                    "terminal_connected": bool(terminal.get("connected", False)),
+                    "trade_allowed": bool(terminal.get("trade_allowed", False)),
+                    "tradeapi_disabled": bool(terminal.get("tradeapi_disabled", True)),
                 },
                 allow_multiple_runs=True,
             )

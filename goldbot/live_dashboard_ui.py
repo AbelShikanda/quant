@@ -50,9 +50,48 @@ function renderProfileSpec(spec) {
   byId('profileSelectSummary').textContent = spec.select_summary || '';
   byId('profileForgoSummary').textContent = spec.forgo_summary || '';
 }
+function renderSteps(s) {
+  const running = !!((s.agent || {}).running);
+  const mt5 = (s.mt5 || {}).status || 'unknown';
+  const accountTradeMode = s.account_trade_mode;
+  const accountLogin = s.account_login;
+  const expectedLogin = s.expected_login;
+  const loginOk = (accountLogin != null && expectedLogin != null) ? String(accountLogin) === String(expectedLogin) : null;
+  const accountOk = accountTradeMode === 0 && loginOk === true;
+  const accountWait = accountTradeMode == null || accountLogin == null;
+  const fundamentals = s.fundamentals || {};
+  const stale = fundamentals.stale_inputs || [];
+  const missing = fundamentals.missing_inputs || [];
+  const macroOk = stale.length === 0 && missing.length === 0;
+  const fusion = s.fusion || {};
+  const decision = s.latest_decision || {};
+  const decisionType = decision.decision_type;
+  const entryReady = fusion.entry_candidate && decisionType === 'ENTER_LONG';
+  const stepState = {
+    spawn: running ? 'pass' : 'wait',
+    mt5: mt5 === 'up' ? 'pass' : (mt5 === 'down' ? 'fail' : 'wait'),
+    account: accountOk ? 'pass' : (accountWait ? 'wait' : 'fail'),
+    macro: macroOk ? 'pass' : 'fail',
+    decision: decisionType === 'ENTER_LONG' ? 'pass' : (decisionType ? 'wait' : 'wait'),
+    order: entryReady ? 'pass' : (decisionType ? 'fail' : 'wait'),
+  };
+  const ids = { spawn: 'step-spawn', mt5: 'step-mt5', account: 'step-account', macro: 'step-macro', decision: 'step-decision', order: 'step-order' };
+  Object.entries(ids).forEach(([key, id]) => { const el = byId(id); if (!el) return; el.className = 'step step-' + stepState[key]; });
+  const notes = [];
+  if (!running) notes.push('Agent stopped; click Start Agent to run the evaluation loop.');
+  if (mt5 !== 'up') notes.push('MT5 status: ' + mt5 + '.');
+  if (accountTradeMode != null && accountTradeMode !== 0) notes.push('Account trade_mode is ' + accountTradeMode + ' (expected 0 demo).');
+  if (loginOk === false) notes.push('Expected login ' + expectedLogin + ' but connected to ' + accountLogin + '.');
+  if (stale.length) notes.push('Stale macro: ' + stale.join(', ') + ' (fresh required).');
+  if (missing.length) notes.push('Missing macro: ' + missing.join(', ') + '.');
+  if (decisionType === 'NO_TRADE') notes.push('Decision: NO_TRADE — ' + ((decision.reasons || []).join('; ')));
+  if (decisionType === 'ENTER_LONG') notes.push('ENTER_LONG — ready for explicit SEND DEMO ORDER authorization.');
+  byId('agentStepsNote').textContent = notes.join(' ') || 'Watching agent steps...';
+}
 function updateState(data) {
   const s = data.state || data;
   renderProfileSpec(s.profile_spec || {});
+  renderSteps(s);
   const agent = s.agent || {};
   const running = !!agent.running;
   const mt5Status = (s.mt5 || {}).status || 'unknown';
@@ -206,6 +245,15 @@ h1,h2,h3{margin:0;font-weight:700}
 .profile-compare dt{color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 .profile-compare dd{margin:0}
 .profile-warning{margin:0;font-size:11px;color:#fca5a5}
+.agent-steps{margin-top:12px;padding:14px}
+.steps{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;list-style:none;margin:8px 0 0;padding:0}
+.step{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;font-size:11px;color:var(--muted)}
+.step-dot{width:14px;height:14px;border-radius:99px;background:#1f2937;flex-shrink:0}
+.step-pass .step-dot{background:var(--green);box-shadow:0 0 10px rgba(34,197,94,.4)}
+.step-fail .step-dot{background:var(--red);box-shadow:0 0 10px rgba(239,68,68,.4)}
+.step-wait .step-dot{background:#713f12;box-shadow:0 0 10px rgba(251,191,36,.25)}
+.step-pass{color:#bbf7d0}.step-fail{color:#fecaca}.step-wait{color:#fde68a}
+.agent-steps-note{margin:8px 0 0;color:var(--muted);font-size:11px}
 .brand{display:flex;gap:10px;align-items:center}
 .logo{width:24px;height:24px;border-radius:7px;background:radial-gradient(circle at 40% 40%,var(--cyan),var(--gold));box-shadow:0 0 12px var(--cyan)}
 .brand-text h1{font-size:16px;letter-spacing:.08em}
@@ -360,6 +408,19 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
       <dt>You forgo</dt><dd id="profileForgoSummary"></dd>
     </dl>
   </div>
+</section>
+
+<section class="panel agent-steps" id="agentStepsPanel">
+  <h2 class="panel-title">Agent Steps</h2>
+  <ol class="steps" id="agentStepsList">
+    <li class="step" id="step-spawn"><span class="step-dot"></span> Spawn agent</li>
+    <li class="step" id="step-mt5"><span class="step-dot"></span> MT5 connection</li>
+    <li class="step" id="step-account"><span class="step-dot"></span> Demo account &amp; expected login</li>
+    <li class="step" id="step-macro"><span class="step-dot"></span> Macro inputs fresh</li>
+    <li class="step" id="step-decision"><span class="step-dot"></span> Strategy decision</li>
+    <li class="step" id="step-order"><span class="step-dot"></span> Order authorization</li>
+  </ol>
+  <p class="agent-steps-note" id="agentStepsNote">Click Start Agent to run the evaluation loop; watch the steps clear or see where it blocks.</p>
 </section>
 
 <main class="layout">
