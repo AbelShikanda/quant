@@ -507,12 +507,26 @@ byId('executePhraseInput').addEventListener('input', function (e) {
 byId('confirmExecuteBtn').addEventListener('click', function () {
   var phrase = String(byId('executePhraseInput').value).replace(/^\s+|\s+$/g, '');
   if (phrase !== 'SEND DEMO ORDER') { alert('Phrase must be SEND DEMO ORDER'); return; }
-  postJson('/api/agent/execute', { confirm: phrase, override: !!byId('overrideBlocksToggle').checked }, function (err) {
-    if (err) { alert(err.message); return; }
+  byId('confirmExecuteBtn').disabled = true;
+  byId('confirmExecuteBtn').textContent = 'Authorizing...';
+  postJson('/api/agent/execute', { confirm: phrase, override: !!byId('overrideBlocksToggle').checked }, function (err, result) {
+    if (err) {
+      setButtonState('acceptBtn', 'Accept & Execute', false);
+      setButtonState('confirmExecuteBtn', 'Authorize & Execute', false);
+      alert(err.message);
+      return;
+    }
+    if (result && result.sent) {
+      setButtonState('acceptBtn', 'Order Sent', true);
+      toast('Demo order placed. It may take a few seconds to appear in the Trade tab.');
+    } else {
+      setButtonState('acceptBtn', 'Order Failed', false);
+      toast('Demo order failed. Check the terminal panel for the rejection reason.');
+    }
     closeDialog('executeModal');
     byId('executePhraseInput').value = '';
-    setButtonState('acceptBtn', 'Order Sent', true);
-    toast('Demo order submitted.');
+    byId('acceptBtn').disabled = true;
+    updateState({ v: 1, state: JSON.parse(byId('appState').getAttribute('data-state')) });
   });
 });
 byId('copyLogsBtn').addEventListener('click', function () {

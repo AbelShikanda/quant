@@ -1040,25 +1040,43 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
             )
             _AGENT_LOG.clear()
             _AGENT_LOG.append(f"[INFO] spawning guarded demo order: {' '.join(cmd)}")
-            process = subprocess.Popen(
-                cmd,
-                cwd=str(ROOT),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=1,
-                text=True,
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                )
+            except subprocess.TimeoutExpired:
+                _append_log("ERROR", "guarded demo order timed out after 90 seconds")
+                _json_response(self, HTTPStatus.GATEWAY_TIMEOUT, {"v": 1, "ok": False, "error": "demo order timed out"})
+                return
+            stdout = proc.stdout or ""
+            stderr = proc.stderr or ""
+            stdout_tail = stdout.splitlines()[-20:] if stdout else []
+            stderr_tail = stderr.splitlines()[-20:] if stderr else []
+            for line in stdout.splitlines():
+                _AGENT_LOG.append(line)
+            for line in stderr.splitlines():
+                _AGENT_LOG.append(f"[STDERR] {line}")
+            sent = "sent: True" in stdout
+            _append_log(
+                "INFO",
+                f"guarded demo order exited with code {proc.returncode}; sent={sent}",
             )
-
-            def _read_output() -> None:
-                assert process.stdout is not None
-                for line in process.stdout:
-                    _AGENT_LOG.append(line.rstrip("\n"))
-                process.wait()
-                exit_code = process.poll()
-                _AGENT_LOG.append(f"[INFO] demo order exited with code {exit_code}")
-
-            threading.Thread(target=_read_output, daemon=True).start()
-            _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True, "started": True, "pid": process.pid})
+            _json_response(
+                self,
+                HTTPStatus.OK,
+                {
+                    "v": 1,
+                    "ok": sent,
+                    "sent": sent,
+                    "exit_code": proc.returncode,
+                    "stdout_tail": stdout_tail,
+                    "stderr_tail": stderr_tail,
+                },
+            )
             return
         if path == "/api/agent/decline":
             reason = str(payload.get("reason") or "").strip()

@@ -741,6 +741,11 @@ def _build_override_preflight(
     symbol_name = str(market.get("symbol", "XAUUSD"))
     execution_minutes = 15 if str(market.get("execution_bar", "M15")).upper() == "M15" else 60
 
+    try:
+        active_feed.connect()
+    except Exception as exc:  # noqa: BLE001 - report and stop the override path
+        raise RuntimeError(f"MT5 connect failed: {type(exc).__name__}: {exc}") from exc
+
     account = active_feed.account_info()
     terminal = active_feed.terminal_info()
     symbol = active_feed.symbol_info()
