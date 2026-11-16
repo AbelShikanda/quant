@@ -33,93 +33,147 @@ def _card(node_id: str, title: str, subtitle: str, body: str, tone: str) -> str:
 
 
 _APP_JS = r"""
-const REFRESH_MS = 2000;
-const escapeHtml = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const byId = (id) => document.getElementById(id);
-const fmtScore = (v) => v == null ? 'n/a' : (v >= 0 ? '+' : '') + Number(v).toFixed(3);
-const fmtNum = (v, d = 2) => v == null ? 'n/a' : Number(v).toFixed(d);
-const fmtTime = (t) => { try { return new Date(t).toISOString(); } catch { return String(t); } };
+var REFRESH_MS = 2000;
+var byId = function (id) { return document.getElementById(id); };
+var escapeHtml = function (v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+    return ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c];
+  });
+};
+var fmtScore = function (v) {
+  if (v == null) { return 'n/a'; }
+  var n = Number(v);
+  if (isNaN(n)) { return 'n/a'; }
+  return (n >= 0 ? '+' : '') + n.toFixed(3);
+};
+var fmtNum = function (v, d) {
+  if (v == null) { return 'n/a'; }
+  var n = Number(v);
+  if (isNaN(n)) { return 'n/a'; }
+  return n.toFixed(d == null ? 2 : d);
+};
+var fmtTime = function (t) {
+  try { return new Date(t).toISOString(); } catch (e) { return String(t); }
+};
+var toast = function (message) {
+  var el = byId('toast');
+  if (!el) { return; }
+  el.textContent = message;
+  el.className = 'toast show';
+  window.clearTimeout(el._timer);
+  el._timer = window.setTimeout(function () { el.className = 'toast'; }, 4000);
+};
+
+function setStep(id, state) {
+  var el = byId(id);
+  if (el) { el.className = 'step step-' + state; }
+}
 
 function renderProfileSpec(spec) {
-  const select = byId('profileSelect'); if (!select) return;
-  select.value = (spec.key || 'micro_50');
+  if (!spec) { return; }
+  var select = byId('profileSelect');
+  if (select) { select.value = spec.key || 'micro_50'; }
   byId('profileDescription').textContent = spec.description || '';
-  byId('profileWarning').textContent = spec.high_risk_override ? 'HIGH RISK OVERRIDE — not promotion-eligible · one stop can be a one-fifth account loss' : 'Promotion-eligible profile';
-  const rows = (spec.spec_rows || []).map((r) => `<div class="spec-row"><dt>${escapeHtml(r.label)}</dt><dd class="${escapeHtml(r.tone || '')}">${escapeHtml(r.value)}</dd></div>`).join('');
-  byId('profileSpecList').innerHTML = rows;
+  byId('profileWarning').textContent = spec.high_risk_override
+    ? 'HIGH RISK OVERRIDE - not promotion-eligible. One stop can be a one-fifth account loss.'
+    : 'Promotion-eligible profile';
+  var rowsHtml = '';
+  var rows = spec.spec_rows || [];
+  for (var i = 0; i < rows.length; i += 1) {
+    var r = rows[i];
+    rowsHtml += '<div class="spec-row"><dt>' + escapeHtml(r.label) + '</dt><dd class="' + escapeHtml(r.tone || '') + '">' + escapeHtml(r.value) + '</dd></div>';
+  }
+  byId('profileSpecList').innerHTML = rowsHtml;
   byId('profileSelectSummary').textContent = spec.select_summary || '';
   byId('profileForgoSummary').textContent = spec.forgo_summary || '';
 }
+
 function renderSteps(s) {
-  const running = !!((s.agent || {}).running);
-  const mt5 = (s.mt5 || {}).status || 'unknown';
-  const accountTradeMode = s.account_trade_mode;
-  const accountLogin = s.account_login;
-  const expectedLogin = s.expected_login;
-  const loginOk = (accountLogin != null && expectedLogin != null) ? String(accountLogin) === String(expectedLogin) : null;
-  const accountOk = accountTradeMode === 0 && loginOk === true;
-  const accountWait = accountTradeMode == null || accountLogin == null;
-  const fundamentals = s.fundamentals || {};
-  const stale = fundamentals.stale_inputs || [];
-  const missing = fundamentals.missing_inputs || [];
-  const macroOk = stale.length === 0 && missing.length === 0;
-  const fusion = s.fusion || {};
-  const decision = s.latest_decision || {};
-  const decisionType = decision.decision_type;
-  const entryReady = fusion.entry_candidate && decisionType === 'ENTER_LONG';
-  const stepState = {
-    spawn: running ? 'pass' : 'wait',
-    mt5: mt5 === 'up' ? 'pass' : (mt5 === 'down' ? 'fail' : 'wait'),
-    account: accountOk ? 'pass' : (accountWait ? 'wait' : 'fail'),
-    macro: macroOk ? 'pass' : 'fail',
-    decision: decisionType === 'ENTER_LONG' ? 'pass' : (decisionType ? 'wait' : 'wait'),
-    order: entryReady ? 'pass' : (decisionType ? 'fail' : 'wait'),
-  };
-  const ids = { spawn: 'step-spawn', mt5: 'step-mt5', account: 'step-account', macro: 'step-macro', decision: 'step-decision', order: 'step-order' };
-  Object.entries(ids).forEach(([key, id]) => { const el = byId(id); if (!el) return; el.className = 'step step-' + stepState[key]; });
-  const notes = [];
-  if (!running) notes.push('Agent stopped; click Start Agent to run the evaluation loop.');
-  if (mt5 !== 'up') notes.push('MT5 status: ' + mt5 + '.');
-  if (accountTradeMode != null && accountTradeMode !== 0) notes.push('Account trade_mode is ' + accountTradeMode + ' (expected 0 demo).');
-  if (loginOk === false) notes.push('Expected login ' + expectedLogin + ' but connected to ' + accountLogin + '.');
-  if (stale.length) notes.push('Stale macro: ' + stale.join(', ') + ' (fresh required).');
-  if (missing.length) notes.push('Missing macro: ' + missing.join(', ') + '.');
-  if (decisionType === 'NO_TRADE') notes.push('Decision: NO_TRADE — ' + ((decision.reasons || []).join('; ')));
-  if (decisionType === 'ENTER_LONG') notes.push('ENTER_LONG — ready for explicit SEND DEMO ORDER authorization.');
+  var running = !!(s.agent && s.agent.running);
+  var mt5 = (s.mt5 && s.mt5.status) || 'unknown';
+  var accountTradeMode = s.account_trade_mode;
+  var accountLogin = s.account_login;
+  var expectedLogin = s.expected_login;
+  var loginOk = null;
+  if (accountLogin != null && expectedLogin != null) {
+    loginOk = String(accountLogin) === String(expectedLogin);
+  }
+  var accountOk = (accountTradeMode === 0 && loginOk === true);
+  var accountWait = (accountTradeMode == null || accountLogin == null);
+  var fundamentals = s.fundamentals || {};
+  var stale = fundamentals.stale_inputs || [];
+  var missing = fundamentals.missing_inputs || [];
+  var macroOk = stale.length === 0 && missing.length === 0;
+  var fusion = s.fusion || {};
+  var decision = s.latest_decision || {};
+  var decisionType = decision.decision_type;
+  var entryReady = !!(fusion.entry_candidate && decisionType === 'ENTER_LONG');
+  setStep('step-spawn', running ? 'pass' : 'wait');
+  setStep('step-mt5', mt5 === 'up' ? 'pass' : (mt5 === 'down' ? 'fail' : 'wait'));
+  setStep('step-account', accountOk ? 'pass' : (accountWait ? 'wait' : 'fail'));
+  setStep('step-macro', macroOk ? 'pass' : 'fail');
+  setStep('step-decision', decisionType === 'ENTER_LONG' ? 'pass' : (decisionType ? 'wait' : 'wait'));
+  setStep('step-order', entryReady ? 'pass' : (decisionType ? 'fail' : 'wait'));
+  var notes = [];
+  if (running) {
+    notes.push('AGENT RUNNING - evaluation loop active.');
+  } else {
+    notes.push('Agent stopped; click Start Agent to run the evaluation loop.');
+  }
+  if (mt5 !== 'up') { notes.push('MT5 status: ' + mt5 + '.'); }
+  if (accountTradeMode != null && accountTradeMode !== 0) {
+    notes.push('Account trade_mode is ' + accountTradeMode + ' (expected 0 demo).');
+  }
+  if (loginOk === false) {
+    notes.push('Expected login ' + expectedLogin + ' but connected to ' + accountLogin + '.');
+  }
+  if (stale.length) { notes.push('Stale macro: ' + stale.join(', ') + ' (fresh required).'); }
+  if (missing.length) { notes.push('Missing macro: ' + missing.join(', ') + '.'); }
+  if (decisionType === 'NO_TRADE') {
+    notes.push('Decision: NO_TRADE - ' + ((decision.reasons || []).join('; ')));
+  } else if (decisionType === 'ENTER_LONG') {
+    notes.push('ENTER_LONG - ready for explicit SEND DEMO ORDER authorization.');
+  }
   byId('agentStepsNote').textContent = notes.join(' ') || 'Watching agent steps...';
 }
+
 function updateState(data) {
-  const s = data.state || data;
+  var s = data.state || data;
   renderProfileSpec(s.profile_spec || {});
   renderSteps(s);
-  const agent = s.agent || {};
-  const running = !!agent.running;
-  const mt5Status = (s.mt5 || {}).status || 'unknown';
-  const killSwitch = !!(s.risk_state || {}).kill_switch;
-  const drawdown = (s.risk_state || {}).current_drawdown_pct;
-  const fundamentals = s.fundamentals || {};
-  const technicals = s.technicals || {};
-  const fusion = s.fusion || {};
-  const overseer = s.overseer || {};
-  const decision = s.latest_decision || {};
+  var agent = s.agent || {};
+  var running = !!agent.running;
+  var mt5Status = (s.mt5 && s.mt5.status) || 'unknown';
+  var killSwitch = !!(s.risk_state && s.risk_state.kill_switch);
+  var drawdown = s.risk_state ? s.risk_state.current_drawdown_pct : null;
+  var fundamentals = s.fundamentals || {};
+  var technicals = s.technicals || {};
+  var fusion = s.fusion || {};
+  var overseer = s.overseer || {};
+  var decision = s.latest_decision || {};
 
   byId('botChipValue').textContent = running ? 'RUNNING' : 'STOPPED';
   byId('botChip').className = 'chip chip-' + (running ? 'green' : 'neutral');
-  byId('mt5ChipValue').textContent = mt5Status.toUpperCase();
+  byId('mt5ChipValue').textContent = String(mt5Status).toUpperCase();
   byId('mt5Chip').className = 'chip chip-' + (mt5Status === 'up' ? 'green' : (mt5Status === 'down' ? 'red' : 'neutral'));
-  byId('riskChipValue').textContent = 'DD ' + (drawdown == null ? 'n/a' : Number(drawdown).toFixed(2) + '%') + ' · KILL ' + (killSwitch ? 'ON' : 'off');
+  var drawdownText = drawdown == null ? 'n/a' : Number(drawdown).toFixed(2) + '%';
+  byId('riskChipValue').textContent = 'DD ' + drawdownText + ' KILL ' + (killSwitch ? 'ON' : 'off');
   byId('riskChip').className = 'chip chip-' + (killSwitch ? 'red' : 'green');
 
-  const profile = (s.account_profile || 'n/a').toUpperCase();
-  const profileChip = document.querySelector('.chip-amber');
-  if (profileChip) profileChip.querySelector('.chip-value').textContent = profile;
+  var profile = (s.account_profile || 'n/a').toUpperCase();
+  var profileChip = document.querySelector('.chip-amber');
+  if (profileChip) {
+    profileChip.querySelector('.chip-value').textContent = profile;
+  }
 
   byId('managerDecision').textContent = decision.decision_type || 'n/a';
   byId('managerStatus').textContent = running ? 'THINKING' : 'IDLE';
-  byId('managerCard').classList.toggle('running', running);
+  if (byId('managerCard')) {
+    byId('managerCard').className = 'manager-card' + (running ? ' running' : '');
+  }
 
   byId('signalScore').textContent = fmtScore(fusion.combined_score);
-  const score = fusion.combined_score == null ? 0 : Math.max(-1, Math.min(1, fusion.combined_score));
+  var score = fusion.combined_score == null ? 0 : Math.max(-1, Math.min(1, fusion.combined_score));
   byId('signalBar').style.width = Math.round((score + 1) * 50) + '%';
   byId('oppFundScore').textContent = fmtScore(fundamentals.score);
   byId('oppTechScore').textContent = fmtScore(technicals.score);
@@ -128,100 +182,325 @@ function updateState(data) {
   byId('opportunityReason').textContent = s.gate_blocker || 'unknown';
   byId('acceptBtn').disabled = !(fusion.entry_candidate && decision.decision_type === 'ENTER_LONG');
 
-  const comp = (fundamentals.components || []).map((c) => `<tr><td>${escapeHtml(c.input_id)}</td><td>${escapeHtml(c.series_id)}</td><td>${fmtNum(c.value, 2)}</td><td>${fmtNum(c.weight, 2)}</td><td class="${c.stale ? 'stale' : ''}">${c.stale ? 'STALE' : 'ok'}</td><td>${escapeHtml(c.note)}</td></tr>`).join('');
-  byId('fundamentalsTable').innerHTML = `<table><thead><tr><th>Input</th><th>Series</th><th>Value</th><th>Weight</th><th>State</th><th>Note</th></tr></thead><tbody>${comp || '<tr><td colspan="6">no components</td></tr>'}</tbody></table>`;
-  const triggers = technicals.entry_triggers || {};
-  const indicators = technicals.indicators || {};
-  byId('technicalsTable').innerHTML = `<table><thead><tr><th>Item</th><th>Value</th></tr></thead><tbody><tr><td>score</td><td>${fmtScore(technicals.score)}</td></tr>${Object.entries(indicators).map(([k,v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(JSON.stringify(v))}</td></tr>`).join('')}${Object.entries(triggers).map(([k,v]) => `<tr><td>trigger: ${escapeHtml(k)}</td><td>${v ? 'pass' : 'fail'}</td></tr>`).join('')}</tbody></table>`;
-  byId('fusionReasons').innerHTML = `<ul>${(fusion.reasons || []).map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>`;
+  var comp = '';
+  var components = fundamentals.components || [];
+  for (var i = 0; i < components.length; i += 1) {
+    var c = components[i];
+    comp += '<tr><td>' + escapeHtml(c.input_id) + '</td><td>' + escapeHtml(c.series_id) + '</td><td>' + fmtNum(c.value, 2) + '</td><td>' + fmtNum(c.weight, 2) + '</td><td class="' + (c.stale ? 'stale' : '') + '">' + (c.stale ? 'STALE' : 'ok') + '</td><td>' + escapeHtml(c.note) + '</td></tr>';
+  }
+  byId('fundamentalsTable').innerHTML = '<table><thead><tr><th>Input</th><th>Series</th><th>Value</th><th>Weight</th><th>State</th><th>Note</th></tr></thead><tbody>' + (comp || '<tr><td colspan="6">no components</td></tr>') + '</tbody></table>';
+
+  var technicalsHtml = '<table><thead><tr><th>Item</th><th>Value</th></tr></thead><tbody>';
+  technicalsHtml += '<tr><td>score</td><td>' + fmtScore(technicals.score) + '</td></tr>';
+  var indicators = technicals.indicators || {};
+  for (var key in indicators) {
+    if (Object.prototype.hasOwnProperty.call(indicators, key)) {
+      technicalsHtml += '<tr><td>' + escapeHtml(key) + '</td><td>' + escapeHtml(JSON.stringify(indicators[key])) + '</td></tr>';
+    }
+  }
+  var triggers = technicals.entry_triggers || {};
+  for (var trigger in triggers) {
+    if (Object.prototype.hasOwnProperty.call(triggers, trigger)) {
+      technicalsHtml += '<tr><td>trigger: ' + escapeHtml(trigger) + '</td><td>' + (triggers[trigger] ? 'pass' : 'fail') + '</td></tr>';
+    }
+  }
+  technicalsHtml += '</tbody></table>';
+  byId('technicalsTable').innerHTML = technicalsHtml;
+
+  var fusionHtml = '';
+  var reasons = fusion.reasons || [];
+  for (var j = 0; j < reasons.length; j += 1) {
+    fusionHtml += '<li>' + escapeHtml(reasons[j]) + '</li>';
+  }
+  byId('fusionReasons').innerHTML = '<ul>' + fusionHtml + '</ul>';
   byId('overseerVerdict').textContent = overseer.verdict || overseer.decision || 'n/a';
   byId('gateBlockerDetail').textContent = s.gate_blocker || 'unknown';
 
-  const logEl = byId('terminal');
-  const lines = (s.agent_logs || []).slice(-120);
-  logEl.innerHTML = lines.map((l) => `<span class="${l.includes('ERROR') ? 'line-error' : l.includes('WARN') ? 'line-warn' : 'line-info'}">${escapeHtml(l)}</span>`).join('');
+  var logEl = byId('terminal');
+  var logLines = (s.agent_logs || []).slice(-120);
+  var logHtml = '';
+  for (var k = 0; k < logLines.length; k += 1) {
+    var line = String(logLines[k]);
+    var cls = line.indexOf('ERROR') !== -1 ? 'line-error' : (line.indexOf('WARN') !== -1 ? 'line-warn' : 'line-info');
+    logHtml += '<span class="' + cls + '">' + escapeHtml(logLines[k]) + '</span>';
+  }
+  logEl.innerHTML = logHtml;
   logEl.scrollTop = logEl.scrollHeight;
   byId('logCount').textContent = (s.agent_logs || []).length + ' lines';
 
-  const bars = s.chart_bars || [];
-  byId('chartBadges').innerHTML = bars.length >= 30 ? '<span class="badge badge-green">LIVE BARS</span>' : '<span class="badge badge-neutral">WAITING FOR BARS</span>';
-  const decisions = (s.decisions || []).slice(0, 5).map((d) => `<span class="pill">${escapeHtml(d.as_of_utc)} ${escapeHtml(d.decision_type)} ${fmtScore(d.combined_score)}</span>`).join('');
-  byId('latestDecisions').innerHTML = decisions || 'no decisions';
-  const orders = (s.orders || []).slice(0, 3).map((o) => `${o.side} ${o.volume} @ ${o.price ?? 'n/a'}`).join(' · ');
-  byId('recentOrders').textContent = orders || 'no orders';
-  const positions = (s.positions || []).slice(0, 3).map((p) => `${p.side} ${p.volume} open ${p.open_price} pnl ${p.realized_pnl ?? 'n/a'}`).join(' · ');
-  byId('recentPositions').textContent = positions || 'no positions';
-  const curve = s.equity_curve || [];
-  const lastEq = curve.length ? curve[curve.length - 1].equity : s.equity;
-  byId('equitySummary').textContent = `equity ${fmtNum(lastEq, 2)} · dd ${fmtNum(drawdown, 2)}%`;
-  byId('chartFooterText').textContent = bars.length ? `${bars.length} bars loaded · M15` : 'bars will appear when the bot writes them to the ledger';
-  byId('chartTimeRange').textContent = bars.length && bars[0].time ? fmtTime(bars[0].time) + ' → ' + fmtTime(bars[bars.length - 1].time) : '';
+  var bars = s.chart_bars || [];
+  byId('chartBadges').innerHTML = bars.length >= 30
+    ? '<span class="badge badge-green">LIVE BARS</span>'
+    : '<span class="badge badge-neutral">WAITING FOR BARS</span>';
+  var decisions = s.decisions || [];
+  var decisionsHtml = '';
+  for (var d = 0; d < decisions.length; d += 1) {
+    var dec = decisions[d];
+    decisionsHtml += '<span class="pill">' + escapeHtml(dec.as_of_utc) + ' ' + escapeHtml(dec.decision_type) + ' ' + fmtScore(dec.combined_score) + '</span>';
+  }
+  byId('latestDecisions').innerHTML = decisionsHtml || 'no decisions';
+  var orders = (s.orders || []).slice(0, 3);
+  var ordersText = [];
+  for (var o = 0; o < orders.length; o += 1) {
+    var ord = orders[o];
+    var price = ord.price == null ? 'n/a' : String(ord.price);
+    ordersText.push(ord.side + ' ' + ord.volume + ' @ ' + price);
+  }
+  byId('recentOrders').textContent = ordersText.length ? ordersText.join(' · ') : 'no orders';
+  var positions = (s.positions || []).slice(0, 3);
+  var positionsText = [];
+  for (var p = 0; p < positions.length; p += 1) {
+    var pos = positions[p];
+    positionsText.push(pos.side + ' ' + pos.volume + ' open ' + pos.open_price + ' pnl ' + (pos.realized_pnl == null ? 'n/a' : pos.realized_pnl));
+  }
+  byId('recentPositions').textContent = positionsText.length ? positionsText.join(' · ') : 'no positions';
+  var curve = s.equity_curve || [];
+  var lastEq = curve.length ? curve[curve.length - 1].equity : s.equity;
+  byId('equitySummary').textContent = 'equity ' + fmtNum(lastEq, 2) + ' dd ' + fmtNum(drawdown, 2) + '%';
+  byId('chartFooterText').textContent = bars.length
+    ? String(bars.length) + ' bars loaded - M15'
+    : 'bars will appear when the bot writes them to the ledger';
+  if (bars.length && bars[0].time) {
+    byId('chartTimeRange').textContent = fmtTime(bars[0].time) + ' to ' + fmtTime(bars[bars.length - 1].time);
+  } else {
+    byId('chartTimeRange').textContent = '';
+  }
   drawChart(bars, s);
 }
 
 function drawChart(bars, state) {
-  const canvas = byId('priceChart'); const ctx = canvas.getContext('2d');
-  const w = canvas.clientWidth; const h = 260; canvas.width = w * 2; canvas.height = h * 2; ctx.scale(2, 2);
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0, 0, w, h);
-  if (!bars || bars.length < 2) { ctx.fillStyle = '#4b5563'; ctx.font = '12px system-ui'; ctx.fillText('No price history in ledger yet', 16, h / 2); return; }
-  const pad = 6; const chartH = h - pad * 2; const highs = bars.map(b => b.high); const lows = bars.map(b => b.low);
-  const hi = Math.max(...highs); const lo = Math.min(...lows); const range = hi - lo || 1;
-  const barW = Math.max(2, Math.floor((w - 20) / bars.length) - 1);
-  bars.forEach((b, i) => {
-    const x = 6 + i * (barW + 1);
-    const yH = pad + (hi - b.high) * chartH / range; const yL = pad + (hi - b.low) * chartH / range;
-    const yO = pad + (hi - b.open) * chartH / range; const yC = pad + (hi - b.close) * chartH / range;
-    const up = b.close >= b.open; ctx.fillStyle = up ? '#22c55e' : '#ef4444'; ctx.strokeStyle = up ? '#22c55e' : '#ef4444';
-    ctx.beginPath(); ctx.moveTo(x + barW / 2, yH); ctx.lineTo(x + barW / 2, yL); ctx.stroke();
-    const top = Math.min(yO, yC); const bh = Math.max(1, Math.abs(yC - yO)); ctx.fillRect(x, top, barW, bh);
-  });
-  const pos = (state.open_positions || [])[0];
-  if (pos) {
-    const lines = [[pos.open_price, '#fbbf24', 'Entry'], [pos.stop_loss, '#ef4444', 'Stop'], [pos.take_profit, '#22c55e', 'Target']];
-    lines.forEach(([p, c, label]) => { if (p == null) return; const y = pad + (hi - p) * chartH / range; ctx.strokeStyle = c; ctx.setLineDash([5,4]); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = c; ctx.font = '10px system-ui'; ctx.fillText(label, 4, y - 2); });
+  var canvas = byId('priceChart');
+  if (!canvas || !canvas.getContext) { return; }
+  var ctx = canvas.getContext('2d');
+  var width = canvas.clientWidth;
+  var height = 260;
+  canvas.width = Math.floor(width * 2);
+  canvas.height = Math.floor(height * 2);
+  ctx.scale(2, 2);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, 0, width, height);
+  if (!bars || bars.length < 2) {
+    ctx.fillStyle = '#4b5563';
+    ctx.font = '12px system-ui';
+    ctx.fillText('No price history in ledger yet', 16, height / 2);
+    return;
+  }
+  var pad = 6;
+  var chartH = height - pad * 2;
+  var hi = -Infinity;
+  var lo = Infinity;
+  for (var i = 0; i < bars.length; i += 1) {
+    if (bars[i].high > hi) { hi = bars[i].high; }
+    if (bars[i].low < lo) { lo = bars[i].low; }
+  }
+  var range = hi - lo || 1;
+  var barW = Math.max(2, Math.floor((width - 20) / bars.length) - 1);
+  for (var j = 0; j < bars.length; j += 1) {
+    var b = bars[j];
+    var x = 6 + j * (barW + 1);
+    var yH = pad + (hi - b.high) * chartH / range;
+    var yL = pad + (hi - b.low) * chartH / range;
+    var yO = pad + (hi - b.open) * chartH / range;
+    var yC = pad + (hi - b.close) * chartH / range;
+    var up = b.close >= b.open;
+    ctx.fillStyle = up ? '#22c55e' : '#ef4444';
+    ctx.strokeStyle = up ? '#22c55e' : '#ef4444';
+    ctx.beginPath();
+    ctx.moveTo(x + barW / 2, yH);
+    ctx.lineTo(x + barW / 2, yL);
+    ctx.stroke();
+    var top = Math.min(yO, yC);
+    var bh = Math.max(1, Math.abs(yC - yO));
+    ctx.fillRect(x, top, barW, bh);
+  }
+  var openPositions = state.open_positions || [];
+  if (openPositions.length) {
+    var pos = openPositions[0];
+    var lines = [];
+    if (pos.open_price != null) { lines.push([pos.open_price, '#fbbf24', 'Entry']); }
+    if (pos.stop_loss != null) { lines.push([pos.stop_loss, '#ef4444', 'Stop']); }
+    if (pos.take_profit != null) { lines.push([pos.take_profit, '#22c55e', 'Target']); }
+    for (var m = 0; m < lines.length; m += 1) {
+      var p = lines[m][0];
+      var c = lines[m][1];
+      var label = lines[m][2];
+      var y = pad + (hi - p) * chartH / range;
+      ctx.strokeStyle = c;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = c;
+      ctx.font = '10px system-ui';
+      ctx.fillText(label, 4, y - 2);
+    }
   }
 }
 
-const byIdApp = (id) => document.getElementById(id);
-const initialState = JSON.parse(byIdApp('appState').dataset.state);
-updateState({ v: 1, state: initialState });
-
-async function postJson(path, body) {
-  const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
-  if (!res.ok) { const err = await res.json().catch(() => ({ error: res.statusText })); throw new Error(err.error || 'request failed'); }
-  return res.json();
+var initialState = null;
+try {
+  initialState = JSON.parse(byId('appState').getAttribute('data-state'));
+} catch (e) {
+  byId('agentStepsNote').textContent = 'Could not load initial state: ' + e.message;
 }
+if (initialState && typeof updateState === 'function') {
+  updateState({ v: 1, state: initialState });
+}
+
+function postJson(path, body, callback) {
+  var req = new XMLHttpRequest();
+  req.open('POST', path, true);
+  req.setRequestHeader('Content-Type', 'application/json');
+  req.onreadystatechange = function () {
+    if (req.readyState !== 4) { return; }
+    var text = req.responseText || '{}';
+    if (req.status >= 200 && req.status < 300) {
+      try { callback(null, JSON.parse(text)); } catch (e) { callback(null, {}); }
+    } else {
+      var message = 'request failed';
+      try { var parsed = JSON.parse(text); message = parsed.error || message; } catch (e) {}
+      callback(new Error(message), null);
+    }
+  };
+  req.send(JSON.stringify(body || {}));
+}
+
+function getJson(path, callback) {
+  var req = new XMLHttpRequest();
+  req.open('GET', path, true);
+  req.onreadystatechange = function () {
+    if (req.readyState !== 4) { return; }
+    var text = req.responseText || '{}';
+    if (req.status >= 200 && req.status < 300) {
+      try { callback(null, JSON.parse(text)); } catch (e) { callback(null, {}); }
+    } else {
+      callback(new Error(req.statusText || 'request failed'), null);
+    }
+  };
+  req.send();
+}
+
 function closeDialog(id) { byId(id).close(); }
-byId('startAgentBtn').addEventListener('click', async () => { try { await postJson('/api/agent/start', {}); } catch (e) { alert(e.message); } });
-byId('stopAgentBtn').addEventListener('click', async () => { try { await postJson('/api/agent/stop', {}); } catch (e) { alert(e.message); } });
-byId('profileSelect').addEventListener('change', async (e) => { try { await postJson('/api/agent/profile', { profile: e.target.value }); } catch (err) { alert(err.message); } });
-byId('reviewEvidenceBtn').addEventListener('click', () => byId('evidenceDrawer').showModal());
-byId('closeEvidenceDrawerBtn').addEventListener('click', () => closeDialog('evidenceDrawer'));
-byId('declineBtn').addEventListener('click', () => byId('declineModal').showModal());
-byId('closeDeclineModalBtn').addEventListener('click', () => closeDialog('declineModal'));
-byId('cancelDeclineBtn').addEventListener('click', () => closeDialog('declineModal'));
-byId('shutdownDashboardBtn').addEventListener('click', () => byId('shutdownModal').showModal());
-byId('closeShutdownModalBtn').addEventListener('click', () => closeDialog('shutdownModal'));
-byId('cancelShutdownBtn').addEventListener('click', () => closeDialog('shutdownModal'));
-byId('confirmShutdownBtn').addEventListener('click', async () => {
-  try { await postJson('/api/server/shutdown', { confirm: 'SHUT DASHBOARD' }); } catch (e) { /* server may exit before the response */ }
-  document.body.innerHTML = '<div class="panel" style="padding:40px;text-align:center;margin:48px auto;max-width:520px"><h2>Dashboard is shutting down</h2><p class="muted">You can close this tab. Reopen the dashboard with the Gold Bot Dashboard shortcut on your Desktop.</p></div>';
+function setButtonState(id, label, disabled) {
+  var el = byId(id);
+  if (el) { el.textContent = label; el.disabled = disabled; }
+}
+
+byId('startAgentBtn').addEventListener('click', function () {
+  setButtonState('startAgentBtn', 'Starting...', true);
+  postJson('/api/agent/start', {}, function (err, result) {
+    if (err) {
+      setButtonState('startAgentBtn', 'Start Agent', false);
+      alert(err.message);
+      return;
+    }
+    setButtonState('startAgentBtn', 'Running', true);
+    toast('Agent started.');
+  });
 });
-byId('confirmDeclineBtn').addEventListener('click', async () => { const reason = byId('declineReasonInput').value.trim(); if (!reason) { alert('Reason required'); return; } try { await postJson('/api/agent/decline', { reason }); byId('declineModal').close(); byId('declineReasonInput').value = ''; } catch (e) { alert(e.message); } });
-byId('acceptBtn').addEventListener('click', () => byId('executeModal').showModal());
-byId('closeExecuteModalBtn').addEventListener('click', () => closeDialog('executeModal'));
-byId('cancelExecuteBtn').addEventListener('click', () => closeDialog('executeModal'));
-byId('executePhraseInput').addEventListener('input', (e) => { byId('confirmExecuteBtn').disabled = e.target.value.trim() !== 'SEND DEMO ORDER'; });
-byId('confirmExecuteBtn').addEventListener('click', async () => { const phrase = byId('executePhraseInput').value.trim(); if (phrase !== 'SEND DEMO ORDER') { alert('Phrase must be SEND DEMO ORDER'); return; } try { await postJson('/api/agent/execute', { confirm: phrase }); byId('executeModal').close(); byId('executePhraseInput').value = ''; } catch (e) { alert(e.message); } });
-byId('copyLogsBtn').addEventListener('click', async () => { try { await navigator.clipboard.writeText(byId('terminal').innerText); } catch (e) { /* ignore */ } });
+byId('stopAgentBtn').addEventListener('click', function () {
+  setButtonState('stopAgentBtn', 'Stopping...', true);
+  postJson('/api/agent/stop', {}, function (err) {
+    if (err) {
+      setButtonState('stopAgentBtn', 'Stop Agent', false);
+      alert(err.message);
+      return;
+    }
+    setButtonState('stopAgentBtn', 'Stop Agent', false);
+    toast('Agent stopped.');
+  });
+});
+byId('profileSelect').addEventListener('change', function (e) {
+  var target = e.target || e.srcElement;
+  postJson('/api/agent/profile', { profile: target.value }, function (err, result) {
+    if (err) { alert(err.message); return; }
+    if (result && result.profile) { renderProfileSpec(result.profile); }
+    toast('Profile: ' + target.value);
+  });
+});
+byId('reviewEvidenceBtn').addEventListener('click', function () { byId('evidenceDrawer').showModal(); });
+byId('closeEvidenceDrawerBtn').addEventListener('click', function () { closeDialog('evidenceDrawer'); });
+byId('declineBtn').addEventListener('click', function () { byId('declineModal').showModal(); });
+byId('closeDeclineModalBtn').addEventListener('click', function () { closeDialog('declineModal'); });
+byId('cancelDeclineBtn').addEventListener('click', function () { closeDialog('declineModal'); });
+byId('shutdownDashboardBtn').addEventListener('click', function () { byId('shutdownModal').showModal(); });
+byId('closeShutdownModalBtn').addEventListener('click', function () { closeDialog('shutdownModal'); });
+byId('cancelShutdownBtn').addEventListener('click', function () { closeDialog('shutdownModal'); });
+byId('confirmShutdownBtn').addEventListener('click', function () {
+  postJson('/api/server/shutdown', { confirm: 'SHUT DASHBOARD' }, function () {
+    document.body.innerHTML = '<div class="panel" style="padding:40px;text-align:center;margin:48px auto;max-width:520px"><h2>Dashboard is shutting down</h2><p class="muted">You can close this tab. Reopen the dashboard with the Gold Bot Dashboard shortcut on your Desktop.</p></div>';
+  });
+});
+byId('confirmDeclineBtn').addEventListener('click', function () {
+  var reason = byId('declineReasonInput').value;
+  reason = reason ? reason.replace(/^\s+|\s+$/g, '') : '';
+  if (!reason) { alert('Reason required'); return; }
+  postJson('/api/agent/decline', { reason: reason }, function (err) {
+    if (err) { alert(err.message); return; }
+    closeDialog('declineModal');
+    byId('declineReasonInput').value = '';
+    toast('Decline logged.');
+  });
+});
+byId('acceptBtn').addEventListener('click', function () { byId('executeModal').showModal(); });
+byId('closeExecuteModalBtn').addEventListener('click', function () { closeDialog('executeModal'); });
+byId('cancelExecuteBtn').addEventListener('click', function () { closeDialog('executeModal'); });
+byId('executePhraseInput').addEventListener('input', function (e) {
+  var target = e.target || e.srcElement;
+  byId('confirmExecuteBtn').disabled = String(target.value).replace(/^\s+|\s+$/g, '') !== 'SEND DEMO ORDER';
+});
+byId('confirmExecuteBtn').addEventListener('click', function () {
+  var phrase = String(byId('executePhraseInput').value).replace(/^\s+|\s+$/g, '');
+  if (phrase !== 'SEND DEMO ORDER') { alert('Phrase must be SEND DEMO ORDER'); return; }
+  postJson('/api/agent/execute', { confirm: phrase }, function (err) {
+    if (err) { alert(err.message); return; }
+    closeDialog('executeModal');
+    byId('executePhraseInput').value = '';
+    setButtonState('acceptBtn', 'Order Sent', true);
+    toast('Demo order submitted.');
+  });
+});
+byId('copyLogsBtn').addEventListener('click', function () {
+  var text = byId('terminal').innerText || '';
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text);
+    return;
+  }
+  var area = document.createElement('textarea');
+  area.value = text;
+  document.body.appendChild(area);
+  area.select();
+  try { document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(area);
+});
 
 function connectStream() {
-  const source = new EventSource('/api/stream');
-  source.addEventListener('state', (ev) => { try { const data = JSON.parse(ev.data); updateState(data); } catch (e) { source.close(); fallbackPoll(); } });
-  source.onerror = () => { source.close(); fallbackPoll(); };
+  if (typeof EventSource === 'undefined') {
+    fallbackPoll();
+    return;
+  }
+  var source = new EventSource('/api/stream');
+  source.addEventListener('state', function (ev) {
+    var data;
+    try { data = JSON.parse(ev.data); } catch (e) { source.close(); fallbackPoll(); return; }
+    updateState(data);
+  });
+  source.onerror = function () {
+    source.close();
+    fallbackPoll();
+  };
 }
-function fallbackPoll() { setInterval(async () => { try { const res = await fetch('/api/state'); const data = await res.json(); updateState(data); } catch (e) { /* retry */ } }, REFRESH_MS); }
+function fallbackPoll() {
+  setInterval(function () {
+    getJson('/api/state', function (err, data) {
+      if (err) { return; }
+      updateState(data);
+    });
+  }, REFRESH_MS);
+}
 connectStream();
 """
 
@@ -254,6 +533,8 @@ h1,h2,h3{margin:0;font-weight:700}
 .step-wait .step-dot{background:#713f12;box-shadow:0 0 10px rgba(251,191,36,.25)}
 .step-pass{color:#bbf7d0}.step-fail{color:#fecaca}.step-wait{color:#fde68a}
 .agent-steps-note{margin:8px 0 0;color:var(--muted);font-size:11px}
+.toast{position:fixed;bottom:16px;right:16px;background:#052e16;border:1px solid #16a34a;border-radius:10px;padding:10px 14px;color:#bbf7d0;font-weight:700;display:none;z-index:10;box-shadow:0 0 20px rgba(34,197,94,.35)}
+.toast.show{display:block}
 .brand{display:flex;gap:10px;align-items:center}
 .logo{width:24px;height:24px;border-radius:7px;background:radial-gradient(circle at 40% 40%,var(--cyan),var(--gold));box-shadow:0 0 12px var(--cyan)}
 .brand-text h1{font-size:16px;letter-spacing:.08em}
@@ -379,7 +660,7 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
     {_chip("Profile", profile.upper(), "amber")}
     <div class="chip chip-{'green' if running else 'neutral'}" id="botChip"><span class="chip-label">BOT</span><span class="chip-value" id="botChipValue">{'RUNNING' if running else 'STOPPED'}</span></div>
     <div class="chip chip-{'green' if mt5.get('status') == 'up' else 'red'}" id="mt5Chip"><span class="chip-label">MT5</span><span class="chip-value" id="mt5ChipValue">{_e(str(mt5.get('status', 'unknown')).upper())}</span></div>
-    <div class="chip chip-{'red' if kill_switch else 'green'}" id="riskChip"><span class="chip-label">RISK</span><span class="chip-value" id="riskChipValue">DD {_e(drawdown)} · KILL {'ON' if kill_switch else 'off'}</span></div>
+    <div class="chip chip-{'red' if kill_switch else 'green'}" id="riskChip"><span class="chip-label">RISK</span><span class="chip-value" id="riskChipValue">DD {_e(drawdown)} KILL {'ON' if kill_switch else 'off'}</span></div>
   </div>
   <div class="controls">
     <button id="startAgentBtn" class="btn btn-primary" type="button">{'Running' if running else 'Start Agent'}</button>
@@ -430,7 +711,7 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
 
     <div class="node-grid">
       {_card("mt5", "MT5 XAUUSD", "Price + Execution Venue", '<div class="kv"><span>Feed</span><span id="kvMt5">…</span></div><div class="kv"><span>Bars</span><span>M15 / H4</span></div>', "cyan")}
-      {_card("fundamental", "Fundamental Agent", "What to consider", '<div class="kv"><span>Score</span><span id="kvFundScore">…</span></div><div class="kv"><span>Weight-bearing</span><span id="kvFundInputs">…</span></div>', "cyan")}
+      {_card("fundamental", "Fundamental Agent", "What to consider", '<div class="kv"><span>Score</span><span id="kvFundScore">…</span></div><div class="kv"><span>Stale</span><span id="kvFundStale">…</span></div>', "cyan")}
       {_card("technical", "Technical Agent", "When to act", '<div class="kv"><span>Score</span><span id="kvTechScore">…</span></div><div class="kv"><span>ATR</span><span id="kvTechAtr">…</span></div>', "cyan")}
       {_card("fusion", "Fusion Engine", "Both-layer agreement", '<div class="kv"><span>Score</span><span id="kvFusionScore">…</span></div><div class="kv"><span>Entry</span><span id="kvFusionEntry">…</span></div>', "amber")}
       {_card("overseer", "Overseer", "Rule-based referee", '<div class="kv"><span>Verdict</span><span id="kvOverseerVerdict">…</span></div><div class="kv"><span>Gate blocker</span><span id="kvGateBlocker">…</span></div>', "purple")}
@@ -552,6 +833,8 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
   </div>
 </dialog>
 
+<div id="toast" class="toast"></div>
+
 <footer class="footer"><span>GOLD BOT · read-only dashboard + guarded executor · loopback only · no scope changes</span><span>Kill switch / risk exits are veto-immune and are never affected by this UI.</span></footer>
 
 <script>
@@ -565,8 +848,8 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Gold bot agentic dashboard — read-only observer with guarded demo execution.">
-<title>Gold Bot — Agentic Desk</title>
+<meta name="description" content="Gold bot agentic dashboard - read-only observer with guarded demo execution.">
+<title>Gold Bot - Agentic Desk</title>
 <style>{_CSS}</style>
 </head>
 <body>
