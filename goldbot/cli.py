@@ -1050,6 +1050,28 @@ def build_parser() -> argparse.ArgumentParser:
     decline.add_argument("--reason", required=True, help="reason for declining")
     decline.set_defaults(func=_cmd_decline)
 
+    close_pos = subparsers.add_parser(
+        "close-position",
+        help="MT5 close one open position by ticket; records the close in the ledger",
+    )
+    close_pos.add_argument("--ticket", required=True, type=int, help="MT5 position ticket to close")
+    close_pos.add_argument("--symbol", default="XAUUSD", help="symbol of the position")
+    close_pos.add_argument("--reason", default="operator request", help="human reason to record")
+    close_pos.add_argument(
+        "--broker-utc-offset-minutes",
+        type=int,
+        default=120,
+        help="broker server offset from UTC (human-confirmed)",
+    )
+    close_pos.add_argument(
+        "--ledger",
+        required=True,
+        help="SQLite ledger path to update",
+    )
+    close_pos.add_argument("--report", help="write full JSON report")
+    close_pos.add_argument("--json", action="store_true", help="print summary JSON")
+    close_pos.set_defaults(func=_cmd_close_position)
+
     demo = subparsers.add_parser(
         "demo-param",
         help="show that a manifest parameter change alters behavior without a code edit",
