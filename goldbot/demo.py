@@ -1114,6 +1114,12 @@ def run_demo_order(
                 fill_volume = float(
                     send_result.get("volume") or request["volume"]
                 )
+                point = float((preflight.symbol or {}).get("point") or 0.01)
+                slippage_points = (
+                    (fill_price - float(request["price"])) / point
+                    if point > 0.0
+                    else None
+                )
                 ledger.record_fill(
                     fill_id=f"broker-fill-{deal_ticket or decision.decision_id}",
                     order_id=order_id,
@@ -1124,7 +1130,7 @@ def run_demo_order(
                     price=fill_price,
                     commission=0.0,
                     swap=0.0,
-                    slippage_points=None,
+                    slippage_points=slippage_points,
                     broker_deal_ticket=int(deal_ticket) if deal_ticket else None,
                     raw_deal=send_result,
                 )

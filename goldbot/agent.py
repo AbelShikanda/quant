@@ -215,11 +215,15 @@ def run_agent_loop(
 
             iteration = 0
             stop_path = Path(stop_file) if stop_file else None
+            halt_path = Path(ledger_path).parent / "kill-switch.halt"
             try:
                 while True:
                     iteration += 1
                     if stop_path and stop_path.exists():
                         _log("[agent] stop file detected; exiting")
+                        break
+                    if halt_path.exists():
+                        _log("[agent] KILL SWITCH halt flag detected; flattening must be verified, exiting")
                         break
                     if max_iterations is not None and iteration > max_iterations:
                         _log(f"[agent] max_iterations={max_iterations} reached; exiting")

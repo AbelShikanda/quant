@@ -688,6 +688,109 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    """Compare the ledger against the MT5 broker. Read-only; never sends orders."""
+    from .reconcile import run_reconcile
+
+    try:
+        report = run_reconcile(
+            ledger_path=args.ledger,
+            symbol=args.symbol,
+            broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface the blocker, don't crash
+        print(f"reconcile failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    payload = json.dumps(report.to_dict(), indent=2, ensure_ascii=False, default=str)
+    if args.json_output:
+        print(payload)
+    else:
+        print(f"verdict={report.verdict} ledger_open={report.ledger_open_count} mt5_open={report.mt5_open_count}")
+        if report.mt5_error:
+            print(f"mt5_error={report.mt5_error}")
+        for ticket in report.ledger_only:
+            print(f"ledger_only ticket={ticket}")
+        for ticket in report.mt5_only:
+            print(f"mt5_only ticket={ticket}")
+        for item in report.mismatches:
+            print(f"mismatch ticket={item['ticket']}: {'; '.join(item['problems'])}")
+        if report.ok:
+            print("ledger and broker agree on open positions")
+    return 0 if report.ok else 1
+
+
+def _cmd_kill_switch(args: argparse.Namespace) -> int:
+    """Flatten every XAUUSD position and halt the bot. Demo-only, phrase-guarded."""
+    from .killswitch import CONFIRMATION_PHRASE, run_kill_switch
+
+    try:
+        result = run_kill_switch(
+            ledger_path=args.ledger,
+            expected_login=args.expected_login,
+            confirm_flatten=args.confirm_flatten,
+            symbol=args.symbol,
+            broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+        )
+    except Exception as exc:  # noqa: BLE001 - guards must surface loudly
+        print(f"kill switch refused/failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    payload = json.dumps(result.to_dict(), indent=2, ensure_ascii=False, default=str)
+    if args.json_output:
+        print(payload)
+    else:
+        print(
+            f"kill switch: positions_before={result.positions_before} "
+            f"closed={len(result.closed)} failed={len(result.failed)} "
+            f"halted={result.halted} incident={result.incident_id}"
+        )
+        print(f"halt flag: {result.halt_file}")
+        if result.failed:
+            print("WARNING: some positions failed to close; investigate MT5 immediately")
+    return 0 if result.ok else 1
+
+
+def _cmd_broker_specs(args: argparse.Namespace) -> int:
+    """Capture FBS-Demo XAUUSD symbol spec and write reports/broker_specs.json."""
+    try:
+        feed = MT5DataFeed(symbol=args.symbol, broker_utc_offset_minutes=args.broker_utc_offset_minutes)
+        feed.connect()
+        try:
+            info = feed._mt5.symbol_info(args.symbol)
+        finally:
+            feed.close()
+    except Exception as exc:  # noqa: BLE001 - CLI must report, not crash
+        print(f"broker-specs failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    spec = info._asdict()
+    allowed = [
+        "name", "description", "exchange", "category", "path",
+        "digits", "point", "currency_base", "currency_margin", "currency_profit",
+        "trade_tick_size", "trade_tick_value", "trade_tick_value_profit", "trade_tick_value_loss",
+        "trade_contract_size",
+        "volume_min", "volume_step", "volume_limit", "volume_max",
+        "trade_stops_level", "trade_freeze_level",
+        "swap_long", "swap_short", "swap_mode", "filling_mode", "trade_mode",
+        "spread", "spread_float", "margin_hedged", "margin_initial", "margin_maintenance",
+        "expiration_time",
+    ]
+    specs = {k: spec.get(k) for k in allowed}
+    specs["_captured_at_utc"] = utc_now().isoformat()
+    specs["_source"] = "MT5 symbol_info()"
+
+    report_path = Path(args.report)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(specs, indent=2, ensure_ascii=False, default=str) + "\n",
+        encoding="utf-8",
+    )
+    print(f"wrote broker specs: {report_path}")
+    print(json.dumps(specs, indent=2, ensure_ascii=False, default=str))
+    return 0
+
+
 def _cmd_demo_param(args: argparse.Namespace) -> int:
     try:
         manifest = _load_manifest_for_run(args)
@@ -858,6 +961,24 @@ def build_parser() -> argparse.ArgumentParser:
     paper.add_argument("--show-decisions", type=int, default=10)
     paper.add_argument("--json", action="store_true", help="print summary JSON")
     paper.set_defaults(func=_cmd_paper)
+
+    specs = subparsers.add_parser(
+        "broker-specs",
+        help="capture FBS-Demo XAUUSD symbol spec from MT5",
+    )
+    specs.add_argument("--symbol", required=True, help="symbol to capture, e.g. XAUUSD")
+    specs.add_argument(
+        "--broker-utc-offset-minutes",
+        type=int,
+        default=120,
+        help="broker server offset from UTC",
+    )
+    specs.add_argument(
+        "--report",
+        default="reports/broker_specs.json",
+        help="write JSON report to this path",
+    )
+    specs.set_defaults(func=_cmd_broker_specs)
 
     wf = subparsers.add_parser(
         "walkforward",
@@ -1071,6 +1192,32 @@ def build_parser() -> argparse.ArgumentParser:
     close_pos.add_argument("--report", help="write full JSON report")
     close_pos.add_argument("--json", action="store_true", help="print summary JSON")
     close_pos.set_defaults(func=_cmd_close_position)
+
+    recon = subparsers.add_parser(
+        "reconcile",
+        help="read-only compare of ledger vs MT5 open positions; exits non-zero on mismatch",
+    )
+    recon.add_argument("--ledger", required=True, help="execution ledger SQLite path")
+    recon.add_argument("--symbol", default="XAUUSD")
+    recon.add_argument("--broker-utc-offset-minutes", type=int, default=120)
+    recon.add_argument("--json-output", action="store_true", help="print full JSON report")
+    recon.set_defaults(func=_cmd_reconcile)
+
+    kill = subparsers.add_parser(
+        "kill-switch",
+        help="EMERGENCY: flatten all XAUUSD positions and halt the bot (demo only, phrase-guarded)",
+    )
+    kill.add_argument("--ledger", required=True, help="execution ledger SQLite path")
+    kill.add_argument("--symbol", default="XAUUSD")
+    kill.add_argument("--broker-utc-offset-minutes", type=int, default=120)
+    kill.add_argument("--expected-login", required=True, type=int, help="demo account login; must match connected account")
+    kill.add_argument(
+        "--confirm-flatten",
+        required=True,
+        help="must be exactly 'FLATTEN AND HALT'",
+    )
+    kill.add_argument("--json-output", action="store_true", help="print full JSON report")
+    kill.set_defaults(func=_cmd_kill_switch)
 
     demo = subparsers.add_parser(
         "demo-param",
