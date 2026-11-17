@@ -244,6 +244,69 @@ function renderNotifications(items) {
   }
 })();
 
+function fmtSigned(n, digits) {
+  digits = digits == null ? 3 : digits;
+  if (n == null || isNaN(Number(n))) { return 'n/a'; }
+  var v = Number(n);
+  return (v >= 0 ? '+' : '') + v.toFixed(digits);
+}
+
+function renderExecAnatomy(s) {
+  var fundamentals = s.fundamentals || {};
+  var technicals = s.technicals || {};
+  var fusion = s.fusion || {};
+  var es = s.exec_quality || {};
+
+  var fund = fundamentals.score;
+  var tech = technicals.score;
+  var fundContrib = (fund == null ? null : 0.55 * fund);
+  var techContrib = (tech == null ? null : 0.40 * tech);
+
+  var setText = function (id, text, cls) {
+    var el = byId(id);
+    if (!el) { return; }
+    el.textContent = text;
+    el.className = 'anatomy-value' + (cls ? ' ' + cls : '');
+  };
+  var signCls = function (v) { return v == null ? '' : (v >= 0 ? 'ok' : 'warn'); };
+
+  setText('anFund', '0.55 x ' + fmtSigned(fund, 3) + ' = ' + fmtSigned(fundContrib, 3), signCls(fundContrib));
+  setText('anTech', '0.40 x ' + fmtSigned(tech, 3) + ' = ' + fmtSigned(techContrib, 3), signCls(techContrib));
+  setText('anCombined', fmtSigned(fusion.combined_score, 3) + ' vs 0.200', signCls(fusion.combined_score));
+  var blocker = s.gate_blocker || (fusion.reasons && fusion.reasons.length ? fusion.reasons[fusion.reasons.length - 1] : 'unknown');
+  setText('anBlocker', blocker, 'warn');
+
+  var stamp = byId('anatomyStamp');
+  if (stamp) {
+    var last = s.latest_decision || {};
+    stamp.textContent = last.as_of_utc ? 'as of ' + String(last.as_of_utc).slice(11, 16) + 'Z' : '';
+  }
+
+  var wrap = byId('managerOrbWrap');
+  if (wrap) {
+    wrap.addEventListener('pointermove', function (ev) {
+      var rect = wrap.getBoundingClientRect();
+      var x = (ev.clientX - rect.left) / rect.width - 0.5;
+      var y = (ev.clientY - rect.top) / rect.height - 0.5;
+      wrap.style.transform = 'rotateY(' + (x * 16).toFixed(2) + 'deg) rotateX(' + (-y * 14).toFixed(2) + 'deg)';
+    });
+    wrap.addEventListener('pointerleave', function () {
+      wrap.style.transform = 'rotateY(0deg) rotateX(0deg)';
+    });
+  }
+
+  var card = byId('managerCard');
+  if (card) {
+    var decisionType = (s.latest_decision || {}).decision_type || 'unknown';
+    var running = !!((s.agent || {}).running);
+    var state = decisionType === 'ENTER_LONG' ? 'state-enter'
+      : es.halt_flag ? 'state-halt'
+      : decisionType === 'NO_TRADE' ? 'state-notrade'
+      : 'state-idle';
+    card.className = 'manager-card ' + state + (running ? ' running' : '');
+  }
+}
+
 function renderExecQuality(s) {
   var q = s.exec_quality || {};
   var setText = function (id, text, cls) {
@@ -366,6 +429,7 @@ function updateState(data) {
   var s = data.state || data;
   renderProfileSpec(s.profile_spec || {});
   renderSteps(s);
+  renderExecAnatomy(s);
   renderNotifications(s.notifications || []);
   renderExecQuality(s);
   renderLiveTrades(s);
@@ -396,9 +460,6 @@ function updateState(data) {
 
   byId('managerDecision').textContent = decision.decision_type || 'n/a';
   byId('managerStatus').textContent = running ? 'THINKING' : 'IDLE';
-  if (byId('managerCard')) {
-    byId('managerCard').className = 'manager-card' + (running ? ' running' : '');
-  }
 
   byId('signalScore').textContent = fmtScore(fusion.combined_score);
   var score = fusion.combined_score == null ? 0 : Math.max(-1, Math.min(1, fusion.combined_score));
@@ -948,17 +1009,41 @@ h1,h2,h3{margin:0;font-weight:700}
 .node-fail{border-color:#7f1d1d;box-shadow:0 0 14px rgba(239,68,68,.22)}
 .node-wait{border-color:#713f12;box-shadow:0 0 14px rgba(251,191,36,.22)}
 .center{display:flex;flex-direction:column;gap:12px}
-.manager-card{position:relative;display:flex;align-items:center;justify-content:center;min-height:150px;border-radius:14px;background:linear-gradient(180deg,#161616,#0a0a0a);border:1px solid var(--border);overflow:hidden}
-.manager-ring{position:absolute;border:1px solid rgba(168,85,247,.25);border-radius:50%;box-shadow:0 0 24px rgba(168,85,247,.12)}
-.manager-ring-outer{width:220px;height:220px}
-.manager-ring-inner{width:150px;height:150px;border-color:rgba(168,85,247,.35);animation:spin 18s linear infinite}
-.manager-core{position:relative;text-align:center;z-index:1}
+.manager-card{position:relative;display:flex;flex-direction:column;align-items:center;gap:10px;min-height:280px;border-radius:14px;background:linear-gradient(180deg,#161616,#0a0a0a);border:1px solid var(--border);overflow:hidden;text-align:center;perspective:720px;padding:14px}
+.manager-orb-wrap{position:relative;width:230px;height:230px;transform-style:preserve-3d;transition:transform .18s ease}
+.manager-orb-svg{position:absolute;inset:0;overflow:visible}
+.orb-ring{transform-origin:115px 115px}
+.orb-ring-1{animation:spinSlow 26s linear infinite}
+.orb-ring-2{animation:spinReverse 34s linear infinite}
+.orb-ring-3{animation:spinSlow 20s linear infinite}
+.orb-body{filter:drop-shadow(0 0 22px rgba(168,85,247,.5))}
+.orb-gloss{animation:breathe 3.4s ease-in-out infinite}
+@keyframes spinSlow{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+@keyframes spinReverse{from{transform:rotate(0)}to{transform:rotate(-360deg)}}
+@keyframes breathe{0%,100%{opacity:.4}50%{opacity:.75}}
+.manager-core{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;z-index:1;pointer-events:none}
 .manager-label{font-size:10px;letter-spacing:.12em;color:var(--muted)}
-.manager-decision{font-size:38px;font-weight:800;letter-spacing:.08em;color:var(--gold)}
-.manager-status{font-size:12px;letter-spacing:.18em;color:var(--purple)}
-.running .manager-ring-outer{animation:pulse 2.2s ease-in-out infinite}
-@keyframes pulse{0%,100%{opacity:.35;transform:scale(1)}50%{opacity:.75;transform:scale(1.04)}}
-@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+.manager-decision{font-size:26px;font-weight:800;letter-spacing:.08em;color:var(--gold);line-height:1.1;margin-top:4px}
+.manager-status{font-size:9px;letter-spacing:.2em;color:var(--purple);text-transform:uppercase;margin-top:2px}
+.anatomy{width:100%;border:1px solid var(--border);border-radius:10px;background:#070707;padding:10px 12px;display:flex;flex-direction:column;gap:6px;text-align:left}
+.anatomy-title-row{display:flex;justify-content:space-between;align-items:baseline}
+.anatomy-title{margin:0;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.anatomy-stamp{font-size:9px;color:var(--muted)}
+.anatomy-line{display:flex;justify-content:space-between;gap:10px;font-size:11px}
+.anatomy-label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+.anatomy-value{font-family:'Cascadia Code',Consolas,monospace;font-size:11px;color:var(--text);text-align:right}
+.anatomy-blocker .anatomy-value{color:#fca5a5}
+.anatomy-value.ok{color:#4ade80}
+.anatomy-value.warn{color:#fca5a5}
+.manager-card.state-enter .orb-body{filter:drop-shadow(0 0 30px rgba(34,197,94,.65))}
+.manager-card.state-enter .manager-decision{color:#86efac}
+.manager-card.state-notrade .orb-body{filter:drop-shadow(0 0 24px rgba(251,191,36,.45))}
+.manager-card.state-notrade .manager-decision{color:#fcd34d}
+.manager-card.state-halt .orb-body{filter:drop-shadow(0 0 34px rgba(239,68,68,.75))}
+.manager-card.state-halt .manager-decision{color:#fca5a5}
+.manager-card.state-halt .manager-status{color:#ef4444;animation:breathe 1.6s ease-in-out infinite}
+.manager-card.state-idle .orb-body{filter:drop-shadow(0 0 22px rgba(168,85,247,.55))}
+@media (prefers-reduced-motion: reduce){.orb-ring,.orb-gloss{animation:none}}
 .opportunity-card{display:flex;flex-direction:column;padding:14px;gap:12px}
 .opportunity-body{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:center}
 .signal-score{font-size:36px;font-weight:800;color:var(--gold)}
@@ -1033,6 +1118,7 @@ h1,h2,h3{margin:0;font-weight:700}
 .muted{color:var(--muted)}
 @media (max-width:1100px){.layout{grid-template-columns:1fr}.node-grid{grid-template-columns:repeat(2,1fr)}.opportunity-body{grid-template-columns:1fr}}
 @media (prefers-reduced-motion: reduce){.manager-ring-inner,.running .manager-ring-outer{animation:none}}
+@media (prefers-reduced-motion: reduce){.orb-ring,.orb-gloss{animation:none}.manager-orb-wrap{transition:none}}
 """
 
 
@@ -1165,12 +1251,42 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
 
   <section class="center">
     <div class="manager-card" id="managerCard">
-      <div class="manager-ring manager-ring-outer"></div>
-      <div class="manager-ring manager-ring-inner"></div>
-      <div class="manager-core">
-        <div class="manager-label">MANAGER</div>
-        <div class="manager-decision" id="managerDecision">—</div>
-        <div class="manager-status" id="managerStatus">IDLE</div>
+      <div class="manager-orb-wrap" id="managerOrbWrap" role="status" aria-label="current manager decision">
+        <svg class="manager-orb-svg" viewBox="0 0 230 230" width="230" height="230" aria-hidden="true">
+          <defs>
+            <radialGradient id="orbCore" cx="42%" cy="38%" r="62%">
+              <stop offset="0%" stop-color="#fdf4ff"/>
+              <stop offset="35%" stop-color="#c084fc"/>
+              <stop offset="70%" stop-color="#7c3aed"/>
+              <stop offset="100%" stop-color="#12051f"/>
+            </radialGradient>
+            <linearGradient id="orbHighlight" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#ffffff" stop-opacity=".9"/>
+              <stop offset="45%" stop-color="#ffffff" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <circle class="orb-ring orb-ring-1" cx="115" cy="115" r="106" fill="none" stroke="rgba(168,85,247,.32)" stroke-width="1.5" stroke-dasharray="5 13"/>
+          <circle class="orb-ring orb-ring-2" cx="115" cy="115" r="86" fill="none" stroke="rgba(34,211,238,.30)" stroke-width="1.2" stroke-dasharray="2 9"/>
+          <circle class="orb-ring orb-ring-3" cx="115" cy="115" r="63" fill="none" stroke="rgba(251,191,36,.38)" stroke-width="1.4" stroke-dasharray="18 10"/>
+          <circle class="orb-body" cx="115" cy="115" r="46" fill="url(#orbCore)"/>
+          <ellipse class="orb-gloss" cx="97" cy="101" rx="17" ry="9" fill="url(#orbHighlight)" opacity=".5" transform="rotate(-16 97 101)"/>
+        </svg>
+        <div class="manager-core">
+          <div class="manager-label">MANAGER</div>
+          <div class="manager-decision" id="managerDecision">—</div>
+          <div class="manager-status" id="managerStatus">IDLE</div>
+        </div>
+      </div>
+
+      <div class="anatomy" id="anatomyPanel">
+        <div class="anatomy-title-row">
+          <h3 class="anatomy-title">Decision anatomy</h3>
+          <span class="anatomy-stamp" id="anatomyStamp"></span>
+        </div>
+        <div class="anatomy-line"><span class="anatomy-label">fundamental 0.55 w</span><span class="anatomy-value" id="anFund">—</span></div>
+        <div class="anatomy-line"><span class="anatomy-label">technical 0.40 w</span><span class="anatomy-value" id="anTech">—</span></div>
+        <div class="anatomy-line"><span class="anatomy-label">combined vs 0.20</span><span class="anatomy-value" id="anCombined">—</span></div>
+        <div class="anatomy-line anatomy-blocker"><span class="anatomy-label">blocked by</span><span class="anatomy-value" id="anBlocker">—</span></div>
       </div>
     </div>
 
