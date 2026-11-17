@@ -117,20 +117,20 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [~] Kill-switch flatten-under-position drill (2026-11-17, via dashboard `POST /api/agent/kill-switch`): 2 open demo positions flattened at market, CRITICAL incident recorded, ledger closed with `close_reason=kill_switch` (P&L -2.71/-3.26), MT5 flat, `reconcile` MATCH (0/0), agent refuses to start while `reports/kill-switch.halt` exists. **PARTIAL / redo later**: 2 broker fills were never tracked in the ledger (FK crash, pre-fix); orders/fills rows for them are missing; redo a clean drill after the intent-first order flow lands.
 - [x] Kill switch guard-chain drill recorded (`goldbot kill-switch --drill`, 2026-11-17, demo account 106806652 verified; no orders sent; halt flag NOT armed)
 - [x] Reconnect drill recorded (`goldbot reconnect-drill`, 2026-11-17, verdict PASS; incident + event in ledger)
-- [ ] No-chart-assumption tests
+- [x] No-chart-assumption tests (`tests/test_no_chart_assumption.py` AST scan of `goldbot/*.py`; zero forbidden chart API calls)
 
 ### Logging and storage
 - [x] SQLite WAL single-writer ledger
 - [x] Snapshots table
 - [x] Decisions / orders / fills / positions tables
 - [x] Logs table with structured payload
-- [ ] Parquet/DuckDB analytical exports
-- [ ] Retention and backup policy
+- [x] Parquet/DuckDB analytical exports (`goldbot export-parquet`; DuckDB `COPY ... FORMAT PARQUET`; verified 2026-11-17: chart_bars=464, strategy_runs=5, decisions=11, logs=15)
+- [x] Retention and backup policy (`goldbot backup`; sqlite online backup + `PRAGMA integrity_check`; keeps N newest backups (`--keep`); verified: backup integrity ok, 434176B)
 
 ### Analytics
 - [ ] Baseline definitions and stored results
 - [ ] Live vs backtest drift monitor
-- [ ] Per-source staleness dashboard data
+- [x] Per-source staleness dashboard data (per-fundamental `STALE/ok` rows + `kvFundStale` chip; macro freshness verified from binding files)
 - [ ] Trade review: entry quality, exit quality, MAE/MFE
 - [ ] SELL-decision review report
 - [ ] Weekly/monthly performance summaries
@@ -147,8 +147,8 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [x] Notification bell + dropdown, persisted until completed
 - [x] Notifications pruned to pending-only: only items needing consistent reconciliation are shown (macro freshness gate, WGC monthly, any pending drill/signoff); proven items disappear; "All clear" when empty
 - [x] WGC reconfirm flow: bell item (link + Reconfirm button) spawns `goldbot wgc-check` — newest XLSX must byte-match the manifest/review file (`world_official_gold_holdings.xlsx`, sha256-tallied, else status `review`); mechanical checks (parse, rows, sha256 vs refresh_event.json, age ≤ 90d); logs `wgc_check` evidence; clears until the next monthly file lands; waiting/fail/stale/review/pass states verified; M1 review evidence and bell tally (same file, same sha)
-- [ ] Inline refresh button for download-driven items (broad USD)
-- [ ] Failure independence from MT5 (dashboard keeps working if MT5 is down)
+- [x] Inline refresh button for download-driven items (macro freshness): bell item spawns `goldbot refresh-macro`; WGC reconfirm button live when monthly file is stale/missing; verified 2026-11-17
+- [x] Failure independence from MT5 (dashboard never imports MT5; `live_dashboard.py` has zero MT5 imports (tests), reads only SQLite read-only; verified in test suite)
 - [ ] Authentication / remote access (not needed while loopback-only)
 
 ---
@@ -174,7 +174,7 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [~] Fill quality: slippage now measured on demo fills (`slippage_points` recorded in ledger fills); latency and fill probability at size not yet measured
 - [ ] Tick/depth backtest to verify trades would have filled where expected
 - [ ] Stop quality under news stress (gap-through-stop simulations)
-- [~] Always-on supervisor/health-check for MT5 connection and bot process (agent loop exists with stop file + halt flag; no heartbeat monitor yet)
+- [~] Supervisor/health-check (agent loop has stop file + halt flag; `goldbot health` probes MT5 + ledger activity age + halt flag, exit codes; verified HALTED with armed flag. Not a daemon/auto-respawn yet � a real supervisor is still open)
 
 ### P1 — strong edge needed for an honest demo record
 - [~] Freshness automation: `goldbot refresh-macro` re-downloads FRED + existing ALFRED vintage files atomically and validates them before touching `data/raw/macro`; wired as a command the owner/agent can call (scheduler/Task Scheduler next step). As of 2026-11-17: DFII10/DTWEXBGS 11-13 (4d, fresh), T10YIE 11-16 (1d), ALFRED_DTWEXBGS 11-16 vintage (4d) — manifest stale limits untouched

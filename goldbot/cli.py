@@ -711,6 +711,76 @@ def _cmd_reconnect_drill(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def _cmd_health(args: argparse.Namespace) -> int:
+    """Read-only health check: halt flag, MT5 probe, ledger activity age."""
+    from .health import run_health
+
+    try:
+        report = run_health(ledger_path=args.ledger, skip_mt5=args.skip_mt5)
+    except Exception as exc:  # noqa: BLE001 - surface, don't crash
+        print(f"health failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json_output:
+        print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False, default=str))
+    else:
+        print(f"health: {report.verdict}")
+        print(f"  halt_flag={report.halt_flag} ({report.halt_flag_path})")
+        print(f"  ledger_exists={report.ledger_exists}")
+        if report.last_activity_utc:
+            print(f"  last_activity={report.last_activity_utc.isoformat()} age={report.last_activity_age_seconds:.0f}s")
+        else:
+            print("  last_activity=None (ledger has no runs/snapshots logged)")
+        print(f"  mt5={report.mt5.get('status')}")
+        if report.mt5.get("status") == "up":
+            print(f"  account login={report.mt5.get('login')} trade_allowed={report.mt5.get('trade_allowed')}")
+        elif report.mt5.get("error"):
+            print(f"  mt5 error={report.mt5.get('error')}")
+    return 0 if report.ok else 1
+
+
+def _cmd_backup(args: argparse.Namespace) -> int:
+    """Timestamped, integrity-checked backup of the execution ledger."""
+    from .backup import run_backup
+
+    result = run_backup(
+        ledger_path=args.ledger,
+        out_dir=args.out_dir,
+        keep=args.keep,
+    )
+    if args.json_output:
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False, default=str))
+    else:
+        if result.ok:
+            print(f"backup ok: {result.destination} ({result.size_bytes} bytes; integrity={result.integrity})")
+            print(f"  backups kept: {result.kept}")
+        else:
+            print(f"backup FAILED: {result.detail}", file=sys.stderr)
+    return 0 if result.ok else 1
+
+
+def _cmd_export_parquet(args: argparse.Namespace) -> int:
+    """Export ledger tables to Parquet under reports/parquet/."""
+    from .parquet_export import run_export
+
+    try:
+        result = run_export(ledger_path=args.ledger, out_dir=args.out_dir)
+    except Exception as exc:  # noqa: BLE001 - surface, don't crash
+        print(f"export-parquet failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json_output:
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False, default=str))
+    else:
+        if not result.ok:
+            print(f"export-parquet FAILED: {result.detail}", file=sys.stderr)
+        else:
+            print(f"export-parquet ok: {result.out_dir}")
+            for table, count in sorted(result.written.items()):
+                print(f"  {table}: {count} rows")
+    return 0 if result.ok else 1
+
+
 def _cmd_refresh_macro(args: argparse.Namespace) -> int:
     """Download FRED macro inputs via the free public endpoint; report staleness."""
     from .refresh import refresh_macro, stale_limits
@@ -1320,6 +1390,34 @@ def build_parser() -> argparse.ArgumentParser:
     close_pos.add_argument("--report", help="write full JSON report")
     close_pos.add_argument("--json", action="store_true", help="print summary JSON")
     close_pos.set_defaults(func=_cmd_close_position)
+
+    health = subparsers.add_parser(
+        "health",
+        help="read-only health probe: halt flag, ledger activity age, MT5 connection (no orders placed)",
+    )
+    health.add_argument("--ledger", default="reports/demo.execution.ledger.sqlite")
+    health.add_argument("--skip-mt5", action="store_true", help="only ledger/halt checks; do not probe MT5")
+    health.add_argument("--json-output", action="store_true")
+    health.set_defaults(func=_cmd_health)
+
+    backup = subparsers.add_parser(
+        "backup",
+        help="timestamped, integrity-checked backup of the execution ledger",
+    )
+    backup.add_argument("--ledger", default="reports/demo.execution.ledger.sqlite")
+    backup.add_argument("--out-dir", default="reports/backups")
+    backup.add_argument("--keep", type=int, default=30, help="keep this many newest backups (default 30; 0 keeps all)")
+    backup.add_argument("--json-output", action="store_true")
+    backup.set_defaults(func=_cmd_backup)
+
+    parquet_cmd = subparsers.add_parser(
+        "export-parquet",
+        help="export ledger tables to Parquet under reports/parquet/ (read-only)",
+    )
+    parquet_cmd.add_argument("--ledger", default="reports/demo.execution.ledger.sqlite")
+    parquet_cmd.add_argument("--out-dir", default="reports/parquet")
+    parquet_cmd.add_argument("--json-output", action="store_true")
+    parquet_cmd.set_defaults(func=_cmd_export_parquet)
 
     refresh_macro_cmd = subparsers.add_parser(
         "refresh-macro",
