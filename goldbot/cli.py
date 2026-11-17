@@ -688,6 +688,29 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reconnect_drill(args: argparse.Namespace) -> int:
+    """Simulate an MT5 disconnect/reconnect; record evidence in the ledger."""
+    from .drill import run_reconnect_drill
+
+    try:
+        result = run_reconnect_drill(
+            ledger_path=args.ledger,
+            symbol=args.symbol,
+            broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface, don't crash
+        print(f"reconnect-drill failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json_output:
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False, default=str))
+    else:
+        print(f"reconnect drill verdict={result.verdict} incident={result.incident_id}")
+        for check in result.checks:
+            print(f"  [{check.status:7s}] {check.name}: {check.detail}")
+    return 0 if result.ok else 1
+
+
 def _cmd_refresh_macro(args: argparse.Namespace) -> int:
     """Download FRED macro inputs via the free public endpoint; report staleness."""
     from .refresh import refresh_macro, stale_limits
@@ -1232,6 +1255,16 @@ def build_parser() -> argparse.ArgumentParser:
     refresh_macro_cmd.add_argument("--macro-dir", default="data/raw/macro")
     refresh_macro_cmd.add_argument("--json-output", action="store_true")
     refresh_macro_cmd.set_defaults(func=_cmd_refresh_macro)
+
+    recon_drill = subparsers.add_parser(
+        "reconnect-drill",
+        help="simulate MT5 disconnect/reconnect; writes drill evidence to the ledger",
+    )
+    recon_drill.add_argument("--ledger", required=True, help="execution ledger SQLite path")
+    recon_drill.add_argument("--symbol", default="XAUUSD")
+    recon_drill.add_argument("--broker-utc-offset-minutes", type=int, default=120)
+    recon_drill.add_argument("--json-output", action="store_true")
+    recon_drill.set_defaults(func=_cmd_reconnect_drill)
 
     recon = subparsers.add_parser(
         "reconcile",
