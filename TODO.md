@@ -178,14 +178,14 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 
 ### P1 — strong edge needed for an honest demo record
 - [~] Freshness automation: `goldbot refresh-macro` re-downloads FRED + existing ALFRED vintage files atomically and validates them before touching `data/raw/macro`; wired as a command the owner/agent can call (scheduler/Task Scheduler next step). As of 2026-11-17: DFII10/DTWEXBGS 11-13 (4d, fresh), T10YIE 11-16 (1d), ALFRED_DTWEXBGS 11-16 vintage (4d) — manifest stale limits untouched
-- [ ] Risk-correlation checks (e.g. correlated USD long/short vs gold positions)
-- [ ] Economic surprise factor (consensus vs actual)
-- [ ] Order-book/depth or spread-history proxy for fill probability at size
+- [~] Risk-correlation check: `goldbot risk-corr` built (read-only H4-return Pearson rho vs USD index); FBS MT5 build exposes no USD symbol (probed) and no weekly gold series locally � reports unavailable honestly instead of fabricating; flag if rho >= +0.3
+- [~] Economic surprise factor: `goldbot surprise` built (owner-maintained CSV; no free ToS-clean consensus feed exists). Owner to populate data/manual/econ/surprises.csv
+- [~] Order-book/depth spread-history proxy: `goldbot spread-report` buckets live samples (<=25/25-35/35-50/...) into fill-probability estimates; 30 samples so far; not a fill simulation, never claimed to be
 - [~] Traceability: `goldbot explain <decision_id>` built for mechanical reconstruction (Markdown from the ledger, never re-runs the strategy). Human reconstruction proof still pending, by design
-- [ ] Regulatory/compliance memo for the broker terms (leverage, confirmation, permitted instruments)
+- [~] Regulatory/compliance memo: docs/compliance-memo.md drafted 2026-11-17 (FBS account/SERP facts, orphan-fill decision, live-capital questions owner must answer). Owner to review and complete
 
 ### P2 — enhancements
-- [ ] Options/positioning diagnostic (futures already captured; no options-open-interest data on FBS/free sources)
+- [~] Options/positioning diagnostic: no options-open-interest data from FBS or from free feeds. COT positioning is already an input (weight 0.10). Not actionable in v1
 - [ ] Live vs backtest drift monitoring with alerting
 - [ ] SELL-first-class review report for exits
 

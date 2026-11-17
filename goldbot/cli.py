@@ -850,6 +850,8 @@ def _cmd_spread_report(args: argparse.Namespace) -> int:
                 f"  overall: min={overall['min']:.1f} p50={overall['p50']:.1f} "
                 f"p90={overall['p90']:.1f} p99={overall['p99']:.1f} max={overall['max']:.1f} points"
             )
+            for row in payload.get("fill_probability_buckets", {}).get("rows", []):
+                print(f"    {row['bucket']:>6s}: {row['count']:4d} samples ({row['pct_of_samples']}%)")
             for hour, stats in payload.get("by_hour_utc", {}).items():
                 if stats.get("n"):
                     print(f"  hour {hour:>2}: n={stats['n']} p50={stats['p50']:.1f} p99={stats['p99']:.1f} max={stats['max']:.1f}")
@@ -967,6 +969,87 @@ def _cmd_sell_review(args: argparse.Namespace) -> int:
             print(f"  {exit_row['as_of_utc']} reason={exit_row['exit_reason']} priority={exit_row['exit_priority']}")
         if report["summary"]["exits"] == 0:
             print("  (no exits recorded yet — nothing to review)")
+    return 0
+
+
+def _cmd_surprise(args: argparse.Namespace) -> int:
+    """Report owner-maintained economic surprises (consensus vs actual)."""
+    from .surprise import report
+
+    payload = report(Path(args.csv))
+    if not payload["csv_exists"]:
+        print(
+            f"surprise: no data file at {payload['csv_path']}\n"
+            "create it with columns: release_date,event,forecast,actual\n"
+            "(owner maintains this file monthly; there is no free ToS-clean consensus feed)"
+        )
+        return 0
+    if args.json_output:
+        print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+    else:
+        print(f"surprise: {payload['count']} observations")
+        summary = payload["summary"]
+        if summary.get("last"):
+            last = summary["last"]
+            print(
+                f"  last: {last['release_date']} {last['event']} "
+                f"forecast={last['forecast']} actual={last['actual']} "
+                f"surprise={last['surprise']} ({last['surprise_pct']}%)"
+            )
+    return 0
+
+
+def _cmd_risk_corr(args: argparse.Namespace) -> int:
+    """Gold vs USD trailing correlation on H4 returns (read-only)."""
+    from .risk_corr import run_risk_corr
+
+    try:
+        report = run_risk_corr(
+            bars=args.bars,
+            broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface, don't crash
+        print(f"risk-corr failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json_output:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    else:
+        status = report.get("status")
+        if status == "unavailable":
+            print(f"risk-corr: unavailable — {report.get('note')}")
+        elif status == "error":
+            print(f"risk-corr: error — {report.get('error')}", file=sys.stderr)
+        else:
+            print(f"risk-corr: symbol={report.get('symbol')} bars={report.get('bars')} rho={report.get('rho')}")
+            if report.get("warning"):
+                print(f"  FLAG: {report['warning']}")
+    return 0 if report.get("ok", True) else 1
+
+
+def _cmd_fill_quality(args: argparse.Namespace) -> int:
+    """Summarize fill quality vs MT5 deal history (read-only)."""
+    from .fill_quality import run_fill_quality
+
+    report = run_fill_quality(ledger_path=args.ledger)
+    if not report.get("ok"):
+        print(f"fill-quality failed: {report.get('error')}", file=sys.stderr)
+        return 2
+
+    if args.json_output:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    else:
+        summary = report["summary"]
+        slip = summary["slippage_points"]
+        print(
+            f"fill-quality: fills={summary['fills']} with_deal={summary['fills_with_deal_ticket']} "
+            f"broker_deals={summary['broker_deals_matched_prefix']}"
+        )
+        print(
+            f"  slippage_points n={slip['n']} min={slip['min']} mean={slip['mean']} max={slip['max']}"
+        )
+        if slip["n"] == 0:
+            print("  (no slippage recorded; older fills predate the slippage tracker)")
     return 0
 
 
@@ -1723,6 +1806,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     eq.add_argument("--json-output", action="store_true")
     eq.set_defaults(func=_cmd_exec_quality)
+
+    surp = subparsers.add_parser(
+        "surprise",
+        help="report owner-maintained consensus-vs-actual surprises (data/manual/econ/surprises.csv)",
+    )
+    surp.add_argument("--csv", default="data/manual/econ/surprises.csv")
+    surp.add_argument("--json-output", action="store_true")
+    surp.set_defaults(func=_cmd_surprise)
+
+    rcorr = subparsers.add_parser(
+        "risk-corr",
+        help="gold vs USD trailing correlation on H4 returns (read-only)",
+    )
+    rcorr.add_argument("--bars", type=int, default=400)
+    rcorr.add_argument("--broker-utc-offset-minutes", type=int, default=120)
+    rcorr.add_argument("--json-output", action="store_true")
+    rcorr.set_defaults(func=_cmd_risk_corr)
+
+    fq = subparsers.add_parser(
+        "fill-quality",
+        help="slippage/RTT and MT5-deal cross-check from the ledger (read-only)",
+    )
+    fq.add_argument("--ledger", default="reports/demo.execution.ledger.sqlite")
+    fq.add_argument("--json-output", action="store_true")
+    fq.set_defaults(func=_cmd_fill_quality)
 
     health = subparsers.add_parser(
         "health",

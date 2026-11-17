@@ -253,36 +253,62 @@ function renderExecQuality(s) {
     el.className = 'eq-value' + (cls ? ' ' + cls : '');
   };
 
+  // Gates
   if (q.blackout_active && q.active_event) {
-    setText('eqBlackout', 'BLOCKED: ' + q.active_event.label + ' (until ' + String(q.active_event.blackout_end_utc || '').slice(11, 16) + 'Z)', 'warn');
-    setText('eqNextEvent', '', 'muted');
-  } else if (q.next_event) {
-    setText('eqBlackout', 'Clear', 'ok');
-    setText('eqNextEvent', String(q.next_event.label || '') + ' in ' + String(Math.max(0, Math.round(q.minutes_until_blackout || 0))) + ' min', '');
+    setText('eqBlackout', 'BLOCKED ' + String(q.active_event.label || ''), 'warn');
   } else {
-    setText('eqBlackout', 'Clear', 'ok');
-    setText('eqNextEvent', 'none in 30d', 'muted');
-  }
-
-  if (q.news_stress && q.news_stress.events > 0) {
-    setText('eqNewsStress', q.news_stress.stop_hits + '/' + q.news_stress.events + ' stops hit (' + q.news_stress.stop_hit_rate_pct + '%)', 'warn');
-  } else if (q.news_stress) {
-    setText('eqNewsStress', q.news_stress.events + ' events checked', 'ok');
-  } else {
-    setText('eqNewsStress', 'no report yet', 'muted');
+    setText('eqBlackout', 'clear', 'ok');
   }
 
   if (q.spread && q.spread.samples > 0) {
-    setText('eqSpread', String(q.spread.samples) + ' ticks · p50=' + Number(q.spread.p50).toFixed(0) + ' p99=' + Number(q.spread.p99).toFixed(0), '');
+    var over = q.tick_backtest && q.tick_backtest.bars_over_limit_pct > 0;
+    var spreadText = 'p50=' + Number(q.spread.p50).toFixed(0) + ' p99=' + Number(q.spread.p99).toFixed(0) + ' / lim 100';
+    setText('eqSpread', spreadText, (q.spread.p99 > 60 || over) ? 'warn' : 'ok');
+  } else if (q.tick_backtest && q.tick_backtest.bars_measured) {
+    setText('eqSpread', 'open p50=' + Number(q.tick_backtest.spread_at_open_p50).toFixed(0) + ' p99=' + Number(q.tick_backtest.spread_at_open_p99).toFixed(0), 'ok');
   } else {
     setText('eqSpread', 'no samples yet', 'muted');
   }
 
+  if (q.halt_flag) {
+    setText('eqHalt', 'ARMED (bot must not trade)', 'warn');
+  } else {
+    setText('eqHalt', 'clear', 'ok');
+  }
+
+  // Vitals
+  var mt5Status = (s.mt5 && s.mt5.status) || 'unknown';
+  setText('eqMt5', String(mt5Status).toUpperCase(), mt5Status === 'up' ? 'ok' : (mt5Status === 'down' ? 'warn' : 'muted'));
+
+  var lastAge = s.last_activity_age_seconds;
+  var lastText = lastAge == null ? 'n/a'
+    : (lastAge < 60 ? Math.floor(lastAge) + 's ago'
+    : lastAge < 3600 ? Math.floor(lastAge / 60) + 'm ago'
+    : (lastAge / 3600).toFixed(1) + 'h ago');
+  setText('eqLastDecision', lastText, lastAge != null && lastAge < 900 ? 'ok' : 'warn');
+
+  if (q.next_event) {
+    setText('eqNextEvent', String(q.next_event.label || '') + ' · ' + String(Math.max(0, Math.round(q.minutes_until_blackout || 0))) + 'm', 'muted');
+  } else if (q.minutes_until_blackout != null) {
+    setText('eqNextEvent', 'in ' + Math.max(0, Math.round(q.minutes_until_blackout)) + 'm', 'muted');
+  } else {
+    setText('eqNextEvent', 'none in 30d', 'muted');
+  }
+
+  // Evidence
+  if (q.news_stress && q.news_stress.events > 0) {
+    setText('eqNewsStress', q.news_stress.stop_hits + '/' + q.news_stress.events + ' blown (' + q.news_stress.stop_hit_rate_pct + '%)', 'warn');
+  } else if (q.news_stress) {
+    setText('eqNewsStress', q.news_stress.events + ' events checked', 'ok');
+  } else {
+    setText('eqNewsStress', 'no report', 'muted');
+  }
+
   if (q.tick_backtest && q.tick_backtest.bars_measured) {
     var tb = q.tick_backtest;
-    setText('eqTick', tb.bars_measured + ' bars · open p50=' + Number(tb.spread_at_open_p50).toFixed(0) + ' p99=' + Number(tb.spread_at_open_p99).toFixed(0), '');
+    setText('eqTick', tb.bars_measured + ' bars · p50=' + Number(tb.spread_at_open_p50).toFixed(0) + ' p99=' + Number(tb.spread_at_open_p99).toFixed(0), '');
   } else {
-    setText('eqTick', 'no tick check yet', 'muted');
+    setText('eqTick', 'no tick check', 'muted');
   }
 
   setText('eqExits', String(q.exits == null ? 0 : q.exits), q.exits && q.exits > 0 ? 'ok' : 'muted');
@@ -840,7 +866,11 @@ h1,h2,h3{margin:0;font-weight:700}
 .profile-warning{margin:0;font-size:11px;color:#fca5a5}
 .agent-steps{margin-top:12px;padding:14px}
 .exec-quality-panel{margin-top:12px;padding:12px}
-.eq-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.eq-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.vitals-panel{margin-top:12px;padding:10px;border:1px solid var(--border);border-radius:10px;background:#070707;display:flex;flex-direction:column;gap:6px}
+.vitals-title{margin:0;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);display:flex;justify-content:space-between;align-items:baseline}
+.vitals-live{color:#4ade80;font-size:9px;letter-spacing:.14em}
+.vitals-group{margin:2px 0 0;font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;border-bottom:1px solid var(--border);padding-bottom:4px}
 .eq-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px}
 .eq-label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
 .eq-value{color:var(--text);font-weight:600;text-align:right}
@@ -1084,18 +1114,6 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
   </div>
 </section>
 
-<section class="panel exec-quality-panel" id="execQualityPanel">
-  <h2 class="panel-title">Execution Quality</h2>
-  <ul class="eq-list" id="eqList">
-    <li><span class="eq-label">News blackout</span><span class="eq-value" id="eqBlackout">—</span></li>
-    <li><span class="eq-label">Next event</span><span class="eq-value" id="eqNextEvent">—</span></li>
-    <li><span class="eq-label">Stop-stress (1.5x ATR)</span><span class="eq-value" id="eqNewsStress">—</span></li>
-    <li><span class="eq-label">Spread p50 / p99</span><span class="eq-value" id="eqSpread">—</span></li>
-    <li><span class="eq-label">Tick check</span><span class="eq-value" id="eqTick">—</span></li>
-    <li><span class="eq-label">Exits recorded</span><span class="eq-value" id="eqExits">—</span></li>
-  </ul>
-</section>
-
 <section class="panel agent-steps" id="agentStepsPanel">
   <h2 class="panel-title">Agent Steps</h2>
   <ol class="steps" id="agentStepsList">
@@ -1121,6 +1139,27 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
       {_card("fusion", "Fusion Engine", "Both-layer agreement", '<div class="kv"><span>Score</span><span id="kvFusionScore">…</span></div><div class="kv"><span>Entry</span><span id="kvFusionEntry">…</span></div>', "amber")}
       {_card("overseer", "Overseer", "Rule-based referee", '<div class="kv"><span>Verdict</span><span id="kvOverseerVerdict">…</span></div><div class="kv"><span>Gate blocker</span><span id="kvGateBlocker">…</span></div>', "purple")}
       {_card("risk", "Risk Engine", "Veto-immune exits", '<div class="kv"><span>Drawdown</span><span id="kvDrawdown">…</span></div><div class="kv"><span>Kill switch</span><span id="kvKillSwitch">…</span></div>', "green")}
+    </div>
+    <div class="vitals-panel" id="vitalsPanel">
+      <h3 class="vitals-title">Execution vitals <span class="vitals-live">live</span></h3>
+      <h4 class="vitals-group">Gates</h4>
+      <ul class="eq-list">
+        <li><span class="eq-label">News blackout</span><span class="eq-value" id="eqBlackout">&mdash;</span></li>
+        <li><span class="eq-label">Spread p50 / p99 / limit</span><span class="eq-value" id="eqSpread">&mdash;</span></li>
+        <li><span class="eq-label">Kill switch</span><span class="eq-value" id="eqHalt">&mdash;</span></li>
+      </ul>
+      <h4 class="vitals-group">Vitals</h4>
+      <ul class="eq-list">
+        <li><span class="eq-label">MT5</span><span class="eq-value" id="eqMt5">&mdash;</span></li>
+        <li><span class="eq-label">Last decision</span><span class="eq-value" id="eqLastDecision">&mdash;</span></li>
+        <li><span class="eq-label">Next event</span><span class="eq-value" id="eqNextEvent">&mdash;</span></li>
+      </ul>
+      <h4 class="vitals-group">Evidence</h4>
+      <ul class="eq-list">
+        <li><span class="eq-label">Stop-stress @1.5x ATR</span><span class="eq-value" id="eqNewsStress">&mdash;</span></li>
+        <li><span class="eq-label">Tick check @M15 opens</span><span class="eq-value" id="eqTick">&mdash;</span></li>
+        <li><span class="eq-label">Exits recorded</span><span class="eq-value" id="eqExits">&mdash;</span></li>
+      </ul>
     </div>
   </aside>
 

@@ -1261,6 +1261,7 @@ def _exec_quality(connection) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - never crash the dashboard on calendar math
         blocked, event, minutes_until = False, None, None
 
+    halt_path = ROOT / "reports" / "kill-switch.halt"
     out: dict[str, Any] = {
         "blackout_active": bool(blocked),
         "active_event": event.to_dict() if blocked and event else None,
@@ -1270,6 +1271,7 @@ def _exec_quality(connection) -> dict[str, Any]:
         "spread": None,
         "tick_backtest": None,
         "exits": 0,
+        "halt_flag": halt_path.exists(),
     }
 
     try:

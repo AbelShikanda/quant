@@ -10,6 +10,7 @@ only after this preflight is clean and the human owner explicitly asks for it.
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -676,7 +677,11 @@ def run_demo_preflight(
                         filling_mode=int(symbol.get("filling_mode") or 0),
                     )
                     try:
+                        _t0 = time.perf_counter()
                         order_check = active_feed.check_order(order_request)
+                        _rtt_ms = round((time.perf_counter() - _t0) * 1000.0, 1)
+                        order_check = dict(order_check or {})
+                        order_check["rtt_ms"] = _rtt_ms
                         check_ok = int(order_check.get("retcode", -1)) == 0
                         _add(
                             items,
@@ -1366,7 +1371,11 @@ def run_demo_order(
                     magic=int(request["magic"]),
                     comment=str(request["comment"]),
                 )
+            _t0 = time.perf_counter()
             send_result = active_feed.send_order(request)
+            _send_rtt_ms = round((time.perf_counter() - _t0) * 1000.0, 1)
+            send_result = dict(send_result or {})
+            send_result["send_rtt_ms"] = _send_rtt_ms
             retcode = int(send_result.get("retcode", -1))
             success = retcode in {10008, 10009}
             broker_order_ticket = send_result.get("order")

@@ -93,6 +93,31 @@ def summarize(values: list[float]) -> dict[str, float]:
     }
 
 
+def buckets(values: list[float]) -> dict[str, Any]:
+    brackets = [
+        ("<=25", 0.0, 25.0),
+        ("25-35", 25.0, 35.0),
+        ("35-50", 35.0, 50.0),
+        ("50-75", 50.0, 75.0),
+        ("75-100", 75.0, 100.0),
+        (">100", 100.0, float("inf")),
+    ]
+    total = len(values)
+    if not total:
+        return {"n": 0, "rows": []}
+    rows = []
+    for label, low, high in brackets:
+        count = sum(1 for v in values if v >= low and (v < high or high == float("inf")))
+        rows.append(
+            {
+                "bucket": label,
+                "count": count,
+                "pct_of_samples": round(count / total * 100, 2),
+            }
+        )
+    return {"n": total, "rows": rows}
+
+
 def read_samples(path: Path = CSV_PATH) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -111,6 +136,7 @@ def report(path: Path = CSV_PATH) -> dict[str, Any]:
         "mode": "spread_report",
         "samples": len(rows),
         "overall": summarize(all_spreads),
+        "fill_probability_buckets": buckets(all_spreads),
         "by_hour_utc": {
             str(hour): summarize(values) for hour, values in sorted(by_hour.items())
         },
