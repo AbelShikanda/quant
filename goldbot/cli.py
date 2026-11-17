@@ -791,16 +791,25 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
 
 def _cmd_kill_switch(args: argparse.Namespace) -> int:
     """Flatten every XAUUSD position and halt the bot. Demo-only, phrase-guarded."""
-    from .killswitch import CONFIRMATION_PHRASE, run_kill_switch
+    from .killswitch import CONFIRMATION_PHRASE, run_kill_switch, run_kill_switch_drill
 
     try:
-        result = run_kill_switch(
-            ledger_path=args.ledger,
-            expected_login=args.expected_login,
-            confirm_flatten=args.confirm_flatten,
-            symbol=args.symbol,
-            broker_utc_offset_minutes=args.broker_utc_offset_minutes,
-        )
+        if args.drill:
+            result = run_kill_switch_drill(
+                ledger_path=args.ledger,
+                expected_login=args.expected_login,
+                confirm_flatten=args.confirm_flatten,
+                symbol=args.symbol,
+                broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+            )
+        else:
+            result = run_kill_switch(
+                ledger_path=args.ledger,
+                expected_login=args.expected_login,
+                confirm_flatten=args.confirm_flatten,
+                symbol=args.symbol,
+                broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+            )
     except Exception as exc:  # noqa: BLE001 - guards must surface loudly
         print(f"kill switch refused/failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
@@ -809,12 +818,15 @@ def _cmd_kill_switch(args: argparse.Namespace) -> int:
     if args.json_output:
         print(payload)
     else:
+        mode = "kill-switch drill" if args.drill else "kill switch"
         print(
-            f"kill switch: positions_before={result.positions_before} "
+            f"{mode}: positions_before={result.positions_before} "
             f"closed={len(result.closed)} failed={len(result.failed)} "
             f"halted={result.halted} incident={result.incident_id}"
         )
         print(f"halt flag: {result.halt_file}")
+        if args.drill:
+            print("drill mode: NO orders were sent and the halt flag was NOT armed")
         if result.failed:
             print("WARNING: some positions failed to close; investigate MT5 immediately")
     return 0 if result.ok else 1
@@ -1310,6 +1322,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="must be exactly 'FLATTEN AND HALT'",
     )
     kill.add_argument("--json-output", action="store_true", help="print full JSON report")
+    kill.add_argument(
+        "--drill",
+        action="store_true",
+        help="prove the guard chain only: no orders sent, halt flag NOT armed, evidence recorded",
+    )
     kill.set_defaults(func=_cmd_kill_switch)
 
     demo = subparsers.add_parser(

@@ -112,8 +112,9 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [~] Headless MT5 order router with idempotency keys (guarded `demo-send` path has idempotency; no autonomous router yet — agent never sends)
 - [~] Pre-trade checks: scope, risk, margin, spread, session, symbol state (built into demo preflight; not yet shared with an autonomous router)
 - [~] Post-trade reconciliation against MT5 deals and positions (`goldbot reconcile` compares ledger vs broker positions, exit code non-zero on mismatch; verified MATCH on empty book; deals reconciliation still pending)
-- [~] Kill switch drill: flatten and halt (`goldbot kill-switch` built: demo-only, exact phrase `FLATTEN AND HALT`, writes `kill-switch.halt` next to ledger, agent loop checks the flag and exits, incident recorded; guard refusal tested; real flatten drill not yet run)
-- [ ] Reconnect drill: state recovery without duplicate orders
+- [ ] Kill switch drill: flatten and halt (`goldbot kill-switch` built: demo-only, exact phrase `FLATTEN AND HALT`, writes `kill-switch.halt` next to ledger, agent loop checks the flag and exits, incident recorded; guard refusal tested; real flatten drill pending)
+- [x] Kill switch guard-chain drill recorded (`goldbot kill-switch --drill`, 2026-11-17, demo account 106806652 verified; no orders sent; halt flag NOT armed; incident `kill_switch_drill` in ledger; promotion gate still wants a flatten drill under an open position)
+- [x] Reconnect drill recorded (`goldbot reconnect-drill`, 2026-11-17, verdict PASS; incident + event in ledger)
 - [ ] No-chart-assumption tests
 
 ### Logging and storage
@@ -141,7 +142,7 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [x] Start/stop agent from UI; terminal output piped per bar
 - [x] Accept & Execute + close path (with DEMO OVERRIDE for testing)
 - [x] Notifications panel with stale macro + WGC manual link
-- [ ] Notification bell + dropdown, persisted until completed
+- [x] Notification bell + dropdown, persisted until completed
 - [ ] Inline refresh button for download-driven items (broad USD)
 - [ ] Failure independence from MT5 (dashboard keeps working if MT5 is down)
 - [ ] Authentication / remote access (not needed while loopback-only)
@@ -194,7 +195,7 @@ Order: 1 broker specs → 2 pre/post-trade checks → 3 idempotency/reconciliati
 - [ ] Step 1b — Broker terms review. Human item; owner must read the FBS client agreement for EA/Python automation on XAUUSD before any non-demo use. Web search surfaced only generic MetaTrader algotrading docs, not FBS-specific terms — must be done by the owner.
 - [~] **Step 2 — Pre- and post-trade checks.** Pre-trade checks live in the demo preflight (spread, stop distance, notional cap, risk %, symbol trade mode, offset confirmation). Post-trade: `goldbot reconcile` (positions, read-only, verified MATCH). Deals-level reconciliation still pending.
 - [x] **Step 3 — Idempotency.** Demo order path enforces `decision_id:ENTRY` idempotency keys; reconcile command detects ledger-only/broker-only positions.
-- [~] **Step 4 — Kill switch + reconnect drill.** Kill switch built and guarded (`goldbot kill-switch`, demo-only, phrase-guarded, halt flag consumed by agent loop, incident recorded); real flatten drill pending owner go-ahead. Reconnect drill not started.
+- [~] **Step 4 — Kill switch + reconnect drill.** Reconnect drill PASS and recorded (incident in ledger). Kill-switch guard-chain drill PASS and recorded (no orders, halt flag not armed). A flatten drill under an open position still needs the owner's go-ahead and an open demo position.
 - [~] **Step 4c — Freshness automation (unblocked the demo).** `goldbot refresh-macro` (FRED + existing ALFRED vintages, atomic, validated) cleared the `broad_usd` gate on 2026-11-17; manifest staleness limits untouched; strategy still reports NO_TRADE on its own signal.
 - [ ] Step 5 — Controlled demo fills → measure slippage/latency.
 - [ ] Step 6 — Promotion gates 1–7 (standard_1k only).
