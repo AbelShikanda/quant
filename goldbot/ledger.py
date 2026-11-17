@@ -315,6 +315,92 @@ class Ledger(AbstractContextManager["Ledger"]):
     # ------------------------------------------------------------------
     # Orders, fills, positions
     # ------------------------------------------------------------------
+    def insert_order_intent(
+        self,
+        *,
+        order_id: str,
+        decision_id: str,
+        submitted_at_utc: datetime,
+        symbol: str,
+        side: str,
+        order_type: str,
+        volume: float,
+        price: float | None,
+        stop_loss: float | None,
+        take_profit: float | None,
+        idempotency_key: str,
+        raw_request: dict[str, Any] | None = None,
+        deviation_points: int | None = None,
+        magic: int | None = None,
+        comment: str | None = None,
+    ) -> bool:
+        """Record the order intent BEFORE the broker is called.
+
+        The idempotency key is the contract between this row and any later
+        run. Returns True if a new intent row was inserted, False if the
+        key already existed (in any state); callers must never bypass that.
+        """
+        existing = self.connection.execute(
+            "SELECT 1 FROM orders WHERE idempotency_key = ? LIMIT 1",
+            (idempotency_key,),
+        ).fetchone()
+        if existing is not None:
+            return False
+        self.connection.execute(
+            """
+            INSERT INTO orders
+                (order_id, decision_id, submitted_at_utc, symbol, side,
+                 order_type, volume, price, stop_loss, take_profit,
+                 deviation_points, magic, comment, state,
+                 broker_order_ticket, idempotency_key,
+                 raw_request_json, raw_response_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_INTENT', ?, ?, ?, '{}')
+            """,
+            (
+                order_id,
+                decision_id,
+                ensure_utc(submitted_at_utc).isoformat(),
+                symbol,
+                side,
+                order_type,
+                float(volume),
+                price,
+                stop_loss,
+                take_profit,
+                deviation_points,
+                magic,
+                comment,
+                None,
+                idempotency_key,
+                json.dumps(raw_request or {}, ensure_ascii=False, default=str),
+            ),
+        )
+        self.connection.commit()
+        return True
+
+    def update_order_after_broker(
+        self,
+        *,
+        order_id: str,
+        state: str,
+        broker_order_ticket: int | None = None,
+        raw_response: dict[str, Any] | None = None,
+    ) -> None:
+        self.connection.execute(
+            """
+            UPDATE orders
+            SET state = ?, broker_order_ticket = ?, raw_response_json = ?
+            WHERE order_id = ?
+            """,
+            (
+                state,
+                broker_order_ticket,
+                json.dumps(raw_response or {}, ensure_ascii=False, default=str),
+                order_id,
+            ),
+        )
+        self.connection.commit()
+
     def record_order(
         self,
         *,

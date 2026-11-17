@@ -111,10 +111,10 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [x] Max drawdown flatten/halt enforced in paper risk state
 - [~] Headless MT5 order router with idempotency keys (guarded `demo-send` path has idempotency; no autonomous router yet — agent never sends)
 - [~] Pre-trade checks: scope, risk, margin, spread, session, symbol state (built into demo preflight; not yet shared with an autonomous router)
-- [~] Post-trade reconciliation against MT5 deals and positions (`goldbot reconcile` for positions, read-only, verified; used 2026-11-17 to catch two untracked override fills; deals-level still pending)
+- [x] Post-trade reconciliation: positions + deals (`goldbot reconcile`, read-only). Live 2026-11-17: positions MATCH (0/0); deals surface 3 broker-only deals with no ledger fills — honest known gap; to backfill in the redo
 - [x] Kill switch drill: flatten and halt (built, drilled under live positions 2026-11-17; incident `killswitch-70b65f13baf44ec0`; halt flag armed)
 - [x] Kill-switch UI placement: the owner fires the kill switch from the dashboard (red button, phrase-confirmed modal, spawns the guarded CLI; endpoint never auto-fires). Verified 2026-11-17 via `POST /api/agent/kill-switch`
-- [x] Kill-switch flatten-under-position drill (2026-11-17, via dashboard `POST /api/agent/kill-switch`): 2 open demo positions flattened at market, CRITICAL incident recorded, ledger closed with `close_reason=kill_switch` (P&L −2.71/−3.26), MT5 flat, `reconcile` MATCH (0/0), agent refuses to start while `reports/kill-switch.halt` exists
+- [~] Kill-switch flatten-under-position drill (2026-11-17, via dashboard `POST /api/agent/kill-switch`): 2 open demo positions flattened at market, CRITICAL incident recorded, ledger closed with `close_reason=kill_switch` (P&L -2.71/-3.26), MT5 flat, `reconcile` MATCH (0/0), agent refuses to start while `reports/kill-switch.halt` exists. **PARTIAL / redo later**: 2 broker fills were never tracked in the ledger (FK crash, pre-fix); orders/fills rows for them are missing; redo a clean drill after the intent-first order flow lands.
 - [x] Kill switch guard-chain drill recorded (`goldbot kill-switch --drill`, 2026-11-17, demo account 106806652 verified; no orders sent; halt flag NOT armed)
 - [x] Reconnect drill recorded (`goldbot reconnect-drill`, 2026-11-17, verdict PASS; incident + event in ledger)
 - [ ] No-chart-assumption tests
@@ -159,7 +159,7 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [ ] 100+ trades recorded
 - [ ] Positive OOS after costs
 - [ ] Drawdown within 0.25%/trade, 1.5% daily, 8% max drawdown
-- [x] Kill switch drill passed (demo, 2026-11-17, 2 positions flattened, halt armed, incident recorded)
+- [~] Kill switch drill passed (demo 2026-11-17; done but intentionally redo later after intent-first order flow; 2 orphan fills untracked)
 - [ ] Reconnect drill passed
 - [ ] Incident log / reviews complete
 - [ ] Human sign-off recorded
@@ -197,9 +197,9 @@ Order: 1 broker specs → 2 pre/post-trade checks → 3 idempotency/reconciliati
 
 - [x] **Step 1 — Broker spec capture.** `goldbot broker-specs --symbol XAUUSD` → `reports/broker_specs.json` (verified live: tick 0.01, contract 100, min lot 0.01, stops_level 0, spread float).
 - [ ] Step 1b — Broker terms review. Human item; owner must read the FBS client agreement for EA/Python automation on XAUUSD before any non-demo use. Web search surfaced only generic MetaTrader algotrading docs, not FBS-specific terms — must be done by the owner.
-- [~] **Step 2 — Pre- and post-trade checks.** Pre-trade checks live in the demo preflight (spread, stop distance, notional cap, risk %, symbol trade mode, offset confirmation). Post-trade: `goldbot reconcile` (positions, read-only, verified MATCH). Deals-level reconciliation still pending.
+- [x] **Step 2 — Pre- and post-trade checks.** Pre-trade checks live in the demo preflight (spread, stop distance, notional cap, risk %, symbol trade mode, offset confirmation). Post-trade: `goldbot reconcile` verified — positions MATCH (0/0) 2026-11-17; deals-level reconciliation live and flags 3 broker-only deals honestly (known gap; backfill in the redo).
 - [x] **Step 3 — Idempotency.** Demo order path enforces `decision_id:ENTRY` idempotency keys; reconcile command detects ledger-only/broker-only positions.
-- [x] **Step 4 — Kill switch + reconnect drill.** Reconnect drill PASS (incident in ledger). Kill-switch guard-chain drill PASS. Kill-switch flatten drill PASS under live positions (2026-11-17): 2 positions closed, halt armed, MT5 flat, reconcile MATCH, agent refuses to start with the halt flag present.
+- [~] **Step 4 — Kill switch + reconnect drill.** PARTIAL — redo after intent-first order flow. Reconnect drill PASS (incident in ledger). Kill-switch guard-chain drill PASS. Kill-switch flatten drill PASS under live positions (2026-11-17): 2 positions closed, halt armed, MT5 flat, reconcile MATCH. Caveats to redo: the 2 fills were not tracked as orders/fills in the ledger (pre-fix FK crash); redo a clean drill once intent-first landing.
 - [~] **Step 4c — Freshness automation (unblocked the demo).** `goldbot refresh-macro` (FRED + existing ALFRED vintages, atomic, validated) cleared the `broad_usd` gate on 2026-11-17; manifest staleness limits untouched; strategy still reports NO_TRADE on its own signal.
 - [ ] Step 5 — Controlled demo fills → measure slippage/latency.
 - [ ] Step 6 — Promotion gates 1–7 (standard_1k only).
@@ -215,7 +215,7 @@ Order: 1 broker specs → 2 pre/post-trade checks → 3 idempotency/reconciliati
 - [!] No `standard_1k` demo run outside the booked crash-recovered tests yet.
 - [!] No demo trade has been taken with the strategy's own signal (only manual override _testing_). As of 2026-11-17 the strategy reports NO_TRADE (score −0.585) — correctly no entry.
 - [!] Pilot gate, reconnect drill not performed in live MT5 (reconnect-drill + kill-switch flatten drills both done 2026-11-17; MT5 demo).
-- [!] Intent-first order flow missing: `demo-send` calls `send_order` BEFORE the ledger write; a ledger failure leaves the fill untracked (this happened 2026-11-17 — two orders hit the broker with ledger FK failure; positions backfilled via agent sync; reconcile caught the drift). Fix = record intent before broker send.
+- [x] Intent-first order flow: `demo-send` records the order intent (`PENDING_INTENT`) BEFORE the broker send; crash between send and ledger write recovers from broker state on the next run (recover by match, or refuse-to-resend on ambiguity); 4 new tests; duplicate resend impossible by construction
 - [!] OOS-after-costs not demonstrated on real fills.
 
 ---

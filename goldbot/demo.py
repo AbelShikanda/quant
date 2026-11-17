@@ -783,6 +783,85 @@ def _ensure_decision_persisted(
     )
 
 
+def _reconcile_pending_intent(feed: Any, request: dict[str, Any]) -> dict[str, Any]:
+    """Ask the broker whether a pending intent was actually received.
+
+    A previous run may have died between the broker send and the ledger
+    write. Before any resend, look for a broker position that matches the
+    request (symbol, magic, volume, and our bot comment).
+    """
+    try:
+        positions = feed.positions()
+    except Exception:  # noqa: BLE001 - broker unreadable; safest is to refuse
+        return {
+            "status": "AMBIGUOUS",
+            "detail": "could not read broker positions; refusing to resend until the broker state is verified",
+            "candidates": [],
+        }
+
+    def _as_dict(position: Any) -> dict[str, Any]:
+        if isinstance(position, dict):
+            return position
+        try:
+            return dict(position._asdict())
+        except Exception:  # noqa: BLE001 - best-effort field extraction
+            return {
+                key: getattr(position, key, None)
+                for key in (
+                    "ticket", "symbol", "type", "volume", "price_open",
+                    "sl", "tp", "magic", "comment", "time",
+                )
+            }
+
+    symbol = str(request.get("symbol") or "").upper()
+    magic = int(request.get("magic") or -1)
+    volume = float(request.get("volume") or 0.0)
+    candidates: list[dict[str, Any]] = []
+    for position in positions:
+        pos = _as_dict(position)
+        pos_symbol = str(pos.get("symbol") or "XAUUSD").upper()
+        pos_magic = pos.get("magic")
+        pos_volume = pos.get("volume")
+        comment = str(pos.get("comment") or "").lower()
+        try:
+            magic_match = int(pos_magic or -1) == magic
+        except (TypeError, ValueError):
+            magic_match = False
+        try:
+            volume_match = abs(float(pos_volume or 0.0) - volume) < 1e-9
+        except (TypeError, ValueError):
+            volume_match = False
+        if (
+            pos_symbol == symbol
+            and magic_match
+            and volume_match
+            and comment.startswith("goldbot")
+        ):
+            candidates.append(pos)
+
+    if len(candidates) == 1:
+        return {
+            "status": "FILLED_MATCHED",
+            "matched": candidates[0],
+            "detail": (
+                f"broker position ticket={candidates[0].get('ticket')} matches the pending intent"
+            ),
+        }
+    if len(candidates) > 1:
+        return {
+            "status": "AMBIGUOUS",
+            "detail": (
+                f"{len(candidates)} broker positions match the pending intent; "
+                "refusing to resend, reconcile manually"
+            ),
+            "candidates": candidates,
+        }
+    return {
+        "status": "NOTHING_SENT",
+        "detail": "pending intent found but no matching broker position; safe to send",
+    }
+
+
 def _build_override_preflight(
     *,
     manifest: dict[str, Any],
@@ -1142,44 +1221,145 @@ def run_demo_order(
                 (idempotency_key,),
             ).fetchone()
             if existing is not None:
-                return DemoOrderResult(
-                    preflight=preflight,
-                    send_requested=True,
-                    sent=False,
-                    send_result={
-                        "status": "ALREADY_RECORDED",
-                        "order_id": existing["order_id"],
-                        "state": existing["state"],
-                    },
-                    ledger_path=ledger_text,
-                )
-
+                state = existing["state"]
+                if state in ("FILLED", "REJECTED", "CANCELLED"):
+                    return DemoOrderResult(
+                        preflight=preflight,
+                        send_requested=True,
+                        sent=False,
+                        send_result={
+                            "status": "ALREADY_RECORDED",
+                            "order_id": existing["order_id"],
+                            "state": state,
+                        },
+                        ledger_path=ledger_text,
+                    )
+                # A pending intent means a previous run died between the
+                # broker send and the ledger write. Reconcile with the broker.
+                recovery = _reconcile_pending_intent(active_feed, request)
+                if recovery["status"] == "AMBIGUOUS":
+                    return DemoOrderResult(
+                        preflight=preflight,
+                        send_requested=True,
+                        sent=False,
+                        send_result={
+                            "status": "RECONCILE_NEEDED",
+                            "detail": recovery["detail"],
+                            "candidates": recovery.get("candidates", []),
+                        },
+                        ledger_path=ledger_text,
+                    )
+                if recovery["status"] == "FILLED_MATCHED":
+                    order_id = existing["order_id"]
+                    matched = recovery["matched"]
+                    ledger.update_order_after_broker(
+                        order_id=order_id,
+                        state="FILLED",
+                        broker_order_ticket=(
+                            int(matched.get("ticket")) if matched.get("ticket") else None
+                        ),
+                        raw_response={
+                            "status": "RECOVERED_FILLED",
+                            "matched": matched,
+                        },
+                    )
+                    submitted_at = _mt5_time_to_utc(
+                        matched.get("time"), broker_utc_offset_minutes
+                    ) or utc_now()
+                    fill_price = float(
+                        matched.get("price_open") or request["price"]
+                    )
+                    fill_volume = float(
+                        matched.get("volume") or request["volume"]
+                    )
+                    point = float((preflight.symbol or {}).get("point") or 0.01)
+                    slippage_points = (
+                        (fill_price - float(request["price"])) / point
+                        if point > 0.0
+                        else None
+                    )
+                    ledger.record_fill(
+                        fill_id=f"broker-fill-recover-{decision.decision_id}",
+                        order_id=order_id,
+                        filled_at_utc=submitted_at,
+                        symbol=str(request["symbol"]),
+                        side="LONG",
+                        volume=fill_volume,
+                        price=fill_price,
+                        commission=0.0,
+                        swap=0.0,
+                        slippage_points=slippage_points,
+                        broker_deal_ticket=None,
+                        raw_deal={"recovered_from": "positions", "matched": matched},
+                    )
+                    open_time = _mt5_time_to_utc(
+                        matched.get("time"), broker_utc_offset_minutes
+                    ) or submitted_at
+                    ledger.record_position(
+                        position_id=f"broker-position-{matched.get('ticket') or decision.decision_id}",
+                        symbol=str(request["symbol"]),
+                        side="LONG",
+                        volume=float(matched.get("volume") or fill_volume),
+                        open_price=float(matched.get("price_open") or fill_price),
+                        open_time_utc=open_time,
+                        stop_loss=float(matched.get("sl") or request["sl"]),
+                        take_profit=float(matched.get("tp") or request["tp"]),
+                        broker_position_ticket=(
+                            int(matched.get("ticket")) if matched.get("ticket") else None
+                        ),
+                        state="DEMO_OPEN",
+                        raw_position=matched,
+                    )
+                    ledger.log_event(
+                        level="INFO",
+                        component="demo_order",
+                        event_type="demo_order_recovered",
+                        message="pending intent matched a broker position; recorded from MT5 reality",
+                        correlation_id=decision.decision_id,
+                        payload={"matched": matched},
+                        logged_at_utc=submitted_at,
+                    )
+                    return DemoOrderResult(
+                        preflight=preflight,
+                        send_requested=True,
+                        sent=True,
+                        send_result={
+                            "status": "RECOVERED_FILLED",
+                            "detail": recovery["detail"],
+                            "matched": matched,
+                        },
+                        ledger_path=ledger_text,
+                    )
             submitted_at = utc_now()
+            if existing is None:
+                ledger.insert_order_intent(
+                    order_id=order_id,
+                    decision_id=decision.decision_id,
+                    submitted_at_utc=submitted_at,
+                    symbol=str(request["symbol"]),
+                    side="LONG",
+                    order_type="MARKET",
+                    volume=float(request["volume"]),
+                    price=float(request["price"]),
+                    stop_loss=float(request["sl"]),
+                    take_profit=float(request["tp"]),
+                    idempotency_key=idempotency_key,
+                    raw_request=request,
+                    deviation_points=int(request["deviation"]),
+                    magic=int(request["magic"]),
+                    comment=str(request["comment"]),
+                )
             send_result = active_feed.send_order(request)
             retcode = int(send_result.get("retcode", -1))
             success = retcode in {10008, 10009}
             broker_order_ticket = send_result.get("order")
-            ledger.record_order(
+            ledger.update_order_after_broker(
                 order_id=order_id,
-                decision_id=decision.decision_id,
-                submitted_at_utc=submitted_at,
-                symbol=str(request["symbol"]),
-                side="LONG",
-                order_type="MARKET",
-                volume=float(request["volume"]),
-                price=float(request["price"]),
-                stop_loss=float(request["sl"]),
-                take_profit=float(request["tp"]),
                 state="FILLED" if success else "REJECTED",
-                idempotency_key=idempotency_key,
-                raw_request=request,
-                raw_response=send_result,
-                deviation_points=int(request["deviation"]),
-                magic=int(request["magic"]),
-                comment=str(request["comment"]),
                 broker_order_ticket=(
                     int(broker_order_ticket) if broker_order_ticket else None
                 ),
+                raw_response=send_result,
             )
             if success:
                 deal_ticket = send_result.get("deal")

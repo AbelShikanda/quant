@@ -808,7 +808,9 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     if args.json_output:
         print(payload)
     else:
-        print(f"verdict={report.verdict} ledger_open={report.ledger_open_count} mt5_open={report.mt5_open_count}")
+        print(
+            f"verdict={report.verdict} ledger_open={report.ledger_open_count} mt5_open={report.mt5_open_count}"
+        )
         if report.mt5_error:
             print(f"mt5_error={report.mt5_error}")
         for ticket in report.ledger_only:
@@ -817,8 +819,20 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
             print(f"mt5_only ticket={ticket}")
         for item in report.mismatches:
             print(f"mismatch ticket={item['ticket']}: {'; '.join(item['problems'])}")
+        print(
+            f"deals={report.deals_verdict} ledger_fills={report.ledger_fill_count} "
+            f"mt5_deals={report.mt5_deal_count} matched={len(report.deals_matched)}"
+        )
+        if report.deals_error:
+            print(f"deals_error={report.deals_error}")
+        for ticket in report.deals_ledger_only:
+            print(f"deals_ledger_only ticket={ticket}")
+        for ticket in report.deals_broker_only:
+            print(f"deals_broker_only ticket={ticket}")
+        for item in report.deal_mismatches:
+            print(f"deal_mismatch ticket={item['ticket']}: {'; '.join(item['problems'])}")
         if report.ok:
-            print("ledger and broker agree on open positions")
+            print("ledger and broker agree on open positions and fills")
     return 0 if report.ok else 1
 
 

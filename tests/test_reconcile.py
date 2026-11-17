@@ -1,6 +1,6 @@
 """Unit tests for the pure ledger-vs-broker comparison (no MT5 required)."""
 
-from goldbot.reconcile import compare_position_sets
+from goldbot.reconcile import compare_fill_sets, compare_position_sets
 
 
 def _ledger_position(ticket, volume=0.01, sl=0.0, tp=0.0, state="DEMO_OPEN"):
@@ -78,3 +78,72 @@ def test_empty_on_both_sides_is_a_match():
     assert result["ledger_only"] == []
     assert result["mt5_only"] == []
     assert result["mismatches"] == []
+
+
+def _ledger_fill(ticket, volume=0.01, price=3900.0):
+    return {
+        "fill_id": f"f-{ticket}",
+        "order_id": "o-1",
+        "broker_deal_ticket": ticket,
+        "volume": volume,
+        "price": price,
+    }
+
+
+def _mt5_deal(ticket, volume=0.01, price=3900.0, comment="goldbot DEMO OVERRIDE"):
+    return {
+        "ticket": ticket,
+        "order": 500 + ticket,
+        "symbol": "XAUUSD",
+        "type": 0,
+        "volume": volume,
+        "price": price,
+        "magic": 20261114,
+        "comment": comment,
+    }
+
+
+def test_deals_exact_match():
+    result = compare_fill_sets([_ledger_fill(111)], [_mt5_deal(111)])
+    assert result["matched"] == [111]
+    assert result["ledger_only"] == []
+    assert result["mt5_only"] == []
+    assert result["mismatches"] == []
+
+
+def test_deals_ledger_only():
+    result = compare_fill_sets([_ledger_fill(111), _ledger_fill(222)], [_mt5_deal(111)])
+    assert result["ledger_only"] == [222]
+
+
+def test_deals_broker_only():
+    result = compare_fill_sets([_ledger_fill(111)], [_mt5_deal(111), _mt5_deal(333)])
+    assert result["mt5_only"] == [333]
+
+
+def test_deals_volume_mismatch():
+    result = compare_fill_sets([_ledger_fill(111, volume=0.02)], [_mt5_deal(111)])
+    assert len(result["mismatches"]) == 1
+    assert "volume" in result["mismatches"][0]["problems"][0]
+
+
+def test_deals_price_mismatch():
+    result = compare_fill_sets([_ledger_fill(111, price=3901.0)], [_mt5_deal(111)])
+    assert len(result["mismatches"]) == 1
+    assert "price" in result["mismatches"][0]["problems"][0]
+
+
+def test_deals_empty_on_both_sides_is_a_match():
+    result = compare_fill_sets([], [])
+    assert result["matched"] == []
+    assert result["ledger_only"] == []
+    assert result["mt5_only"] == []
+    assert result["mismatches"] == []
+
+
+def test_fills_without_broker_ticket_are_ignored():
+    result = compare_fill_sets(
+        [{"fill_id": "f-1", "broker_deal_ticket": None}],
+        [],
+    )
+    assert result["ledger_only"] == []

@@ -533,6 +533,12 @@ class MT5DataFeed:
             raise DataError("MT5DataFeed.connect() must be called first")
         return _mt5_record_to_dict(self._mt5.order_check(request))
 
+    def history_deals_get(self, since: int, until: float) -> list[dict[str, Any]]:
+        if self._mt5 is None:
+            raise DataError("MT5DataFeed.connect() must be called first")
+        raw = self._mt5.history_deals_get(int(since), int(until))
+        return [_mt5_record_to_dict(item) for item in (raw or [])]
+
     def open_positions(self, symbol: str | None = None) -> list[dict[str, Any]]:
         if self._mt5 is None:
             raise DataError("MT5DataFeed.connect() must be called first")
