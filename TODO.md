@@ -132,7 +132,7 @@ Done correctly means: safe, gated, and evidence-oriented â€” not merely "the cod
 - [ ] Live vs backtest drift monitor
 - [x] Per-source staleness dashboard data (per-fundamental `STALE/ok` rows + `kvFundStale` chip; macro freshness verified from binding files)
 - [ ] Trade review: entry quality, exit quality, MAE/MFE
-- [ ] SELL-decision review report
+- [ ] SELL-decision review report (nothing to review yet; `goldbot sell-review` built — prints 0 exits today)`
 - [ ] Weekly/monthly performance summaries
 - [ ] Reconstruction test: human explains one decision from logs alone
 
@@ -172,7 +172,7 @@ Done correctly means: safe, gated, and evidence-oriented â€” not merely "the cod
 ### P0 â€” must exist before any live trading
 - [x] Economic calendar with blackout windows: `goldbot/econ_calendar.py`, `goldbot calendar` — FOMC/CPI/NFP/PCE +/-30 min, Treasury auction +/-60 min (owner-approved 2026-11-17); wired into agent + demo-preflight gates; `news_blackout` preflight item; dates verified against FOMC/BLS/BEA/Treasury sources; 7 new tests
 - [~] Fill quality: slippage recorded on fills; latency/fill-probability not measured; spread-history sampler built (spread_history.csv; p50=28 p99=32 pts during hour 16; needs more samples)
-- [~] Tick/depth backtest: not done; MT5 provides ticks; FBS provides no market depth (probed) — needs its own effort; spread-history proxy built (see spread_history.csv; `goldbot spread-sample`/`spread-report`)
+- [~] Tick/depth backtest: `goldbot tick-backtest` (quote-level) — bar-open spread p50=25 p99=45pts, 0/116 bars over the 100pts limit; trough (open?deepest mid) p50=279pts; FBS provides NO market depth (probed) — not a fill simulation, never claim it is; multi-day sweep pending
 - [~] Stop quality under news stress: `goldbot news-stress` built; real MT5 M15 bars: 4 of 10 events (4000 bars, Oct-Nov 2026) would have blown through a 1.5x-ATR stop (40%); blackout justified; full multi-year sweep still pending
 - [~] Supervisor/health-check (agent loop has stop file + halt flag; `goldbot health` probes MT5 + ledger activity age + halt flag, exit codes; verified HALTED with armed flag. Not a daemon/auto-respawn yet — a real supervisor is still open)
 

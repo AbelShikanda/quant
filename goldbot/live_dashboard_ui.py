@@ -244,6 +244,50 @@ function renderNotifications(items) {
   }
 })();
 
+function renderExecQuality(s) {
+  var q = s.exec_quality || {};
+  var setText = function (id, text, cls) {
+    var el = byId(id);
+    if (!el) { return; }
+    el.textContent = text;
+    el.className = 'eq-value' + (cls ? ' ' + cls : '');
+  };
+
+  if (q.blackout_active && q.active_event) {
+    setText('eqBlackout', 'BLOCKED: ' + q.active_event.label + ' (until ' + String(q.active_event.blackout_end_utc || '').slice(11, 16) + 'Z)', 'warn');
+    setText('eqNextEvent', '', 'muted');
+  } else if (q.next_event) {
+    setText('eqBlackout', 'Clear', 'ok');
+    setText('eqNextEvent', String(q.next_event.label || '') + ' in ' + String(Math.max(0, Math.round(q.minutes_until_blackout || 0))) + ' min', '');
+  } else {
+    setText('eqBlackout', 'Clear', 'ok');
+    setText('eqNextEvent', 'none in 30d', 'muted');
+  }
+
+  if (q.news_stress && q.news_stress.events > 0) {
+    setText('eqNewsStress', q.news_stress.stop_hits + '/' + q.news_stress.events + ' stops hit (' + q.news_stress.stop_hit_rate_pct + '%)', 'warn');
+  } else if (q.news_stress) {
+    setText('eqNewsStress', q.news_stress.events + ' events checked', 'ok');
+  } else {
+    setText('eqNewsStress', 'no report yet', 'muted');
+  }
+
+  if (q.spread && q.spread.samples > 0) {
+    setText('eqSpread', String(q.spread.samples) + ' ticks · p50=' + Number(q.spread.p50).toFixed(0) + ' p99=' + Number(q.spread.p99).toFixed(0), '');
+  } else {
+    setText('eqSpread', 'no samples yet', 'muted');
+  }
+
+  if (q.tick_backtest && q.tick_backtest.bars_measured) {
+    var tb = q.tick_backtest;
+    setText('eqTick', tb.bars_measured + ' bars · open p50=' + Number(tb.spread_at_open_p50).toFixed(0) + ' p99=' + Number(tb.spread_at_open_p99).toFixed(0), '');
+  } else {
+    setText('eqTick', 'no tick check yet', 'muted');
+  }
+
+  setText('eqExits', String(q.exits == null ? 0 : q.exits), q.exits && q.exits > 0 ? 'ok' : 'muted');
+}
+
 function renderLiveTrades(state) {
   var positions = state.open_positions || [];
   var snapshot = state.latest_snapshot || {};
@@ -297,6 +341,7 @@ function updateState(data) {
   renderProfileSpec(s.profile_spec || {});
   renderSteps(s);
   renderNotifications(s.notifications || []);
+  renderExecQuality(s);
   renderLiveTrades(s);
   var agent = s.agent || {};
   var running = !!agent.running;
@@ -794,6 +839,14 @@ h1,h2,h3{margin:0;font-weight:700}
 .profile-compare dd{margin:0}
 .profile-warning{margin:0;font-size:11px;color:#fca5a5}
 .agent-steps{margin-top:12px;padding:14px}
+.exec-quality-panel{margin-top:12px;padding:12px}
+.eq-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.eq-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px}
+.eq-label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+.eq-value{color:var(--text);font-weight:600;text-align:right}
+.eq-value.warn{color:#fca5a5}
+.eq-value.ok{color:#4ade80}
+.eq-value.muted{color:var(--muted);font-weight:400}
 .steps{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;list-style:none;margin:8px 0 0;padding:0}
 .step{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;font-size:11px;color:var(--muted)}
 .step-dot{width:14px;height:14px;border-radius:99px;background:#1f2937;flex-shrink:0}
@@ -1029,6 +1082,18 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
       <dt>You forgo</dt><dd id="profileForgoSummary"></dd>
     </dl>
   </div>
+</section>
+
+<section class="panel exec-quality-panel" id="execQualityPanel">
+  <h2 class="panel-title">Execution Quality</h2>
+  <ul class="eq-list" id="eqList">
+    <li><span class="eq-label">News blackout</span><span class="eq-value" id="eqBlackout">—</span></li>
+    <li><span class="eq-label">Next event</span><span class="eq-value" id="eqNextEvent">—</span></li>
+    <li><span class="eq-label">Stop-stress (1.5x ATR)</span><span class="eq-value" id="eqNewsStress">—</span></li>
+    <li><span class="eq-label">Spread p50 / p99</span><span class="eq-value" id="eqSpread">—</span></li>
+    <li><span class="eq-label">Tick check</span><span class="eq-value" id="eqTick">—</span></li>
+    <li><span class="eq-label">Exits recorded</span><span class="eq-value" id="eqExits">—</span></li>
+  </ul>
 </section>
 
 <section class="panel agent-steps" id="agentStepsPanel">

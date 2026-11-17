@@ -395,6 +395,10 @@ def load_state(
         connection.close()
     proofs["macro"] = _macro_freshness()
     state["proofs"] = proofs
+    try:
+        state["exec_quality"] = _exec_quality(connection)
+    except Exception:  # noqa: BLE001 - never crash the dashboard on extras
+        state["exec_quality"] = {}
 
     run_summary = _json_dict(latest_run.get("summary_json")) if latest_run else {}
     account_trade_mode = run_summary.get("account_trade_mode")
@@ -1240,6 +1244,104 @@ def _refresh_macro_command() -> list[str]:
         "--ledger",
         EXECUTION_LEDGER,
     ]
+
+
+def _exec_quality(connection) -> dict[str, Any]:
+    """Execution-quality snapshot for the dashboard: blackout, stress, spread, tick check, exits.
+
+    ``connection`` may be closed already by the caller; a fresh read-only
+    handle is opened if so.
+    """
+    from .econ_calendar import blackout_at, upcoming
+    from .spread import report as _spread_report
+
+    now = _utc_now()
+    try:
+        blocked, event, minutes_until = blackout_at(now)
+    except Exception:  # noqa: BLE001 - never crash the dashboard on calendar math
+        blocked, event, minutes_until = False, None, None
+
+    out: dict[str, Any] = {
+        "blackout_active": bool(blocked),
+        "active_event": event.to_dict() if blocked and event else None,
+        "minutes_until_blackout": minutes_until,
+        "next_event": None,
+        "news_stress": None,
+        "spread": None,
+        "tick_backtest": None,
+        "exits": 0,
+    }
+
+    try:
+        horizon = upcoming(now, 30)
+        if horizon:
+            nxt = horizon[0]
+            out["next_event"] = {
+                "label": nxt.label,
+                "category": nxt.category,
+                "starts_at_utc": nxt.starts_at_utc.isoformat(),
+                "blackout_start_utc": nxt.blackout_start_utc.isoformat(),
+                "blackout_end_utc": nxt.blackout_end_utc.isoformat(),
+            }
+    except Exception:  # noqa: BLE001 - best effort
+        out["next_event"] = None
+
+    try:
+        events_row = connection.execute(
+            "SELECT COUNT(*) AS n FROM strategy_decisions WHERE decision_type = 'EXIT'"
+        ).fetchone()
+        out["exits"] = int(events_row[0]) if events_row else 0
+    except Exception:  # noqa: BLE001
+        # connection might already be closed; open a fresh one
+        try:
+            fresh = _read_only_connection(ROOT / "reports" / "demo.execution.ledger.sqlite")
+            events_row = fresh.execute(
+                "SELECT COUNT(*) AS n FROM strategy_decisions WHERE decision_type = 'EXIT'"
+            ).fetchone()
+            out["exits"] = int(events_row[0]) if events_row else 0
+            fresh.close()
+        except Exception:  # noqa: BLE001
+            out["exits"] = 0
+
+    spread_csv = ROOT / "reports" / "spread_history.csv"
+    if spread_csv.exists():
+        try:
+            spread = _spread_report(spread_csv)
+            overall = spread.get("overall") or {}
+            out["spread"] = {
+                "samples": spread.get("samples", 0),
+                "p50": overall.get("p50"),
+                "p90": overall.get("p90"),
+                "p99": overall.get("p99"),
+                "max": overall.get("max"),
+            }
+        except Exception:  # noqa: BLE001
+            out["spread"] = None
+
+    stress_json = ROOT / "reports" / "news_stress.json"
+    if stress_json.exists():
+        try:
+            stress = json.loads(stress_json.read_text(encoding="utf-8"))
+            out["news_stress"] = stress.get("summary")
+        except Exception:  # noqa: BLE001
+            out["news_stress"] = None
+
+    tick_json = ROOT / "reports" / "tick_backtest.json"
+    if tick_json.exists():
+        try:
+            tick = json.loads(tick_json.read_text(encoding="utf-8"))
+            summary = tick.get("summary") or {}
+            out["tick_backtest"] = {
+                "bars_measured": summary.get("bars_measured"),
+                "spread_at_open_p50": (summary.get("spread_at_open") or {}).get("p50"),
+                "spread_at_open_p99": (summary.get("spread_at_open") or {}).get("p99"),
+                "bars_over_limit_pct": summary.get("bars_over_limit_pct"),
+                "window_from": (tick.get("window") or {}).get("from"),
+            }
+        except Exception:  # noqa: BLE001
+            out["tick_backtest"] = None
+
+    return out
 
 
 def _wgc_check_command() -> list[str]:

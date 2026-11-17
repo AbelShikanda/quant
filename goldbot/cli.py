@@ -858,6 +858,118 @@ def _cmd_spread_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_tick_backtest(args: argparse.Namespace) -> int:
+    """Measure bar-open spread and adverse trough on recent ticks; no orders."""
+    from .tick_backtest import run_tick_backtest
+
+    try:
+        report = run_tick_backtest(
+            bars=args.bars,
+            broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface, don't crash
+        print(f"tick-backtest failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(
+            json.dumps(report, indent=2, ensure_ascii=False, default=str) + "\n",
+            encoding="utf-8",
+        )
+        print(f"tick-backtest written: {out_path}")
+    if args.json_output:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    else:
+        if not report.get("ok"):
+            print(f"tick-backtest failed: {report.get('error')}", file=sys.stderr)
+            return 2
+        summary = report["summary"]
+        print(
+            f"tick-backtest: bars={summary['bars_measured']}/{summary['bars_available']} "
+            f"spread@open p50={summary['spread_at_open'].get('p50')} p99={summary['spread_at_open'].get('p99')} "
+            f"over_limit={summary['bars_over_limit']} ({summary['bars_over_limit_pct']}%) "
+            f"max_trough={summary['max_trough_points']} pts"
+        )
+    return 0
+
+
+def _cmd_exec_quality(args: argparse.Namespace) -> int:
+    """One-screen execution-quality summary for the current account/ledger."""
+    from .econ_calendar import blackout_at, upcoming
+    from .contracts import utc_now
+
+    now = utc_now()
+    blocked, event, minutes_until = blackout_at(now)
+    payload: dict[str, Any] = {
+        "now_utc": now.isoformat(),
+        "blackout": blocked,
+        "active_event": event.to_dict() if blocked and event else None,
+        "minutes_until_blackout": minutes_until if not blocked else None,
+        "minutes_until_blackout_end": minutes_until if blocked else None,
+        "upcoming": [e.to_dict() for e in upcoming(now, 14)],
+    }
+    if Path("reports/news_stress.json").exists():
+        try:
+            stress = json.loads(Path("reports/news_stress.json").read_text(encoding="utf-8"))
+            payload["news_stress"] = stress.get("summary")
+        except Exception:  # noqa: BLE001 - best effort
+            payload["news_stress"] = None
+    if Path("reports/spread_history.csv").exists():
+        from .spread import report as spread_report
+
+        payload["spread_history"] = spread_report(Path("reports/spread_history.csv"))
+    if Path("reports/tick_backtest.json").exists():
+        try:
+            tick = json.loads(Path("reports/tick_backtest.json").read_text(encoding="utf-8"))
+            payload["tick_backtest"] = {
+                "generated_at_utc": tick.get("generated_at_utc"),
+                "window": tick.get("window"),
+                "summary": tick.get("summary"),
+            }
+        except Exception:  # noqa: BLE001 - best effort
+            payload["tick_backtest"] = None
+    if args.json_output:
+        print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+    else:
+        if blocked and event:
+            print(f"BLACKOUT ACTIVE: {event.label} — entries blocked until {event.blackout_end_utc.isoformat()}")
+        else:
+            print(f"entries allowed; next event in {minutes_until:.0f} minutes" if minutes_until else "no upcoming events")
+        if payload.get("news_stress"):
+            s = payload["news_stress"]
+            print(f"news stress: {s['stop_hits']}/{s['events']} stops hit ({s['stop_hit_rate_pct']}%)")
+        if payload.get("spread_history"):
+            sp = payload["spread_history"]
+            print(f"spread samples: {sp['samples']} overall p50={sp['overall'].get('p50')} p99={sp['overall'].get('p99')}")
+        if payload.get("tick_backtest"):
+            tb = payload["tick_backtest"]
+            s = tb.get("summary", {})
+            print(f"tick backtest window: {tb.get('window', {}).get('from')} -> bars={s.get('bars_measured')}")
+    return 0
+
+
+def _cmd_sell_review(args: argparse.Namespace) -> int:
+    """Print the SELL-side dossier from the ledger: exits, reasons, vetoes."""
+    from .sell_review import run_sell_review
+
+    report = run_sell_review(ledger_path=args.ledger)
+    if not report.get("ok"):
+        print(f"sell-review failed: {report.get('error')}", file=sys.stderr)
+        return 2
+
+    if args.json_output:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    else:
+        print(f"sell-review: exits={report['summary']['exits']} fills={report['exit_fill_count']}")
+        for exit_row in report["exits"][:20]:
+            print(f"  {exit_row['as_of_utc']} reason={exit_row['exit_reason']} priority={exit_row['exit_priority']}")
+        if report["summary"]["exits"] == 0:
+            print("  (no exits recorded yet — nothing to review)")
+    return 0
+
+
 def _cmd_health(args: argparse.Namespace) -> int:
     """Read-only health check: halt flag, MT5 probe, ledger activity age."""
     from .health import run_health
@@ -1586,6 +1698,31 @@ def build_parser() -> argparse.ArgumentParser:
     spread_report.add_argument("--csv", default="reports/spread_history.csv")
     spread_report.add_argument("--json-output", action="store_true")
     spread_report.set_defaults(func=_cmd_spread_report)
+
+    tick_cmd = subparsers.add_parser(
+        "tick-backtest",
+        help="measure bar-open spread and adverse trough on recent ticks; no orders (read-only)",
+    )
+    tick_cmd.add_argument("--bars", type=int, default=400)
+    tick_cmd.add_argument("--broker-utc-offset-minutes", type=int, default=120)
+    tick_cmd.add_argument("--output", default=None)
+    tick_cmd.add_argument("--json-output", action="store_true")
+    tick_cmd.set_defaults(func=_cmd_tick_backtest)
+
+    sr = subparsers.add_parser(
+        "sell-review",
+        help="SELL-side dossier from the ledger: exits, reasons, vetoes, fills",
+    )
+    sr.add_argument("--ledger", default="reports/demo.execution.ledger.sqlite")
+    sr.add_argument("--json-output", action="store_true")
+    sr.set_defaults(func=_cmd_sell_review)
+
+    eq = subparsers.add_parser(
+        "exec-quality",
+        help="one-screen execution-quality summary: blackout, news-stress, spread, tick check",
+    )
+    eq.add_argument("--json-output", action="store_true")
+    eq.set_defaults(func=_cmd_exec_quality)
 
     health = subparsers.add_parser(
         "health",
