@@ -34,12 +34,15 @@ def _sync_open_positions(
     ledger: Ledger,
     scope_id: str,
     execution_minutes: int,
+    broker_utc_offset_minutes: int = 120,
 ) -> None:
     """Reconcile MT5 open positions into the ledger.
 
     Positions still open in MT5 but missing from the ledger are inserted;
     positions present in the ledger but no longer open in MT5 are closed.
     """
+    # MT5 `time` is broker-local wall time expressed as epoch — subtract offset.
+    open_offset = timedelta(minutes=broker_utc_offset_minutes)
     rows = ledger.connection.execute(
         """
         SELECT position_id, side, volume, open_price, stop_loss, take_profit
@@ -74,7 +77,7 @@ def _sync_open_positions(
                     side,
                     volume,
                     open_price,
-                    datetime.fromtimestamp(int(position.get("time", 0)), tz=timezone.utc),
+                    datetime.fromtimestamp(int(position.get("time", 0)), tz=timezone.utc) - open_offset,
                     stop_loss,
                     take_profit,
                     int(position.get("ticket") or 0),
@@ -244,7 +247,7 @@ def run_agent_loop(
                         h4 = BarSeries(active_feed.fetch_bars("H4", context_bars), "H4")
                         macro_store = load_macro_directory(macro_dir)
                         tick = active_feed.symbol_tick()
-                        _sync_open_positions(active_feed, ledger, scope_id, execution_minutes)
+                        _sync_open_positions(active_feed, ledger, scope_id, execution_minutes, broker_utc_offset_minutes)
                         latest_bar = _latest_closed_bar(
                             m15,
                             tick=tick,

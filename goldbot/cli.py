@@ -897,6 +897,35 @@ def _cmd_tick_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_trade_review(args: argparse.Namespace) -> int:
+    """MAE/MFE and entry/exit quality per closed trade; account summary."""
+    from .trade_review import run_trade_review, render_markdown
+
+    since = datetime.fromisoformat(args.since) if args.since else None
+    until = datetime.fromisoformat(args.until) if args.until else None
+
+    try:
+        report = run_trade_review(
+            ledger_path=args.ledger,
+            symbol=args.symbol,
+            broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+            since=since,
+            until=until,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface, don't crash
+        print(f"trade-review failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json_output:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    else:
+        if not report.get("ok"):
+            print(f"trade-review: {report.get('error')}", file=sys.stderr)
+            return 2
+        print(render_markdown(report))
+    return 0
+
+
 def _cmd_exec_quality(args: argparse.Namespace) -> int:
     """One-screen execution-quality summary for the current account/ledger."""
     from .econ_calendar import blackout_at, upcoming
@@ -1799,6 +1828,18 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--ledger", default="reports/demo.execution.ledger.sqlite")
     sr.add_argument("--json-output", action="store_true")
     sr.set_defaults(func=_cmd_sell_review)
+
+    trade_review = subparsers.add_parser(
+        "trade-review",
+        help="MAE/MFE and entry/exit quality per closed trade; account summary",
+    )
+    trade_review.add_argument("--ledger", default="reports/demo.execution.ledger.sqlite")
+    trade_review.add_argument("--symbol", default="XAUUSD")
+    trade_review.add_argument("--broker-utc-offset-minutes", type=int, default=120)
+    trade_review.add_argument("--since", default=None, help="ISO date/datetime (inclusive)")
+    trade_review.add_argument("--until", default=None, help="ISO date/datetime (exclusive)")
+    trade_review.add_argument("--json-output", action="store_true")
+    trade_review.set_defaults(func=_cmd_trade_review)
 
     eq = subparsers.add_parser(
         "exec-quality",

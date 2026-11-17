@@ -128,12 +128,12 @@ Done correctly means: safe, gated, and evidence-oriented â€” not merely "the cod
 - [x] Retention and backup policy (`goldbot backup`; sqlite online backup + `PRAGMA integrity_check`; keeps N newest backups (`--keep`); verified: backup integrity ok, 434176B)
 
 ### Analytics
-- [ ] Baseline definitions and stored results
+- [x] Baseline definitions and stored results (`reports/baselines_synthetic.json`; real macro + synthetic M15; buy-and-hold +4.57%, simple trend +4.42%, random-entry mean +2.17%, bot expectancy via folds)
 - [ ] Live vs backtest drift monitor
 - [x] Per-source staleness dashboard data (per-fundamental `STALE/ok` rows + `kvFundStale` chip; macro freshness verified from binding files)
-- [ ] Trade review: entry quality, exit quality, MAE/MFE
+- [x] Trade review: `goldbot trade-review` — MAE/MFE per closed trade (requires MT5-reader; prints honest SKIPPED if bars unavailable). 3 demo trades today: win_rate 0%, expectancy -2.5, avg MAE 23.62 pts (2026-11-17)
 - [ ] SELL-decision review report (nothing to review yet; `goldbot sell-review` built — prints 0 exits today)`
-- [ ] Weekly/monthly performance summaries
+- [x] Weekly/monthly performance summaries: `goldbot trade-review --since ... --until ...`; today`s demo summary: 3 trades, 0 wins, -7.51 USD total, avg MAE 23.62 pts
 - [ ] Reconstruction test: human explains one decision from logs alone
 
 ### Dashboard

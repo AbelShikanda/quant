@@ -49,6 +49,7 @@ class TechnicalEngine:
         self.session_weekdays = {
             int(day) for day in as_list(session.get("weekdays", [0, 1, 2, 3, 4]))
         }
+        self.h4_atr_period = int(self.config.get("h4_atr_period", 14))
 
     def evaluate(
         self,
@@ -155,6 +156,8 @@ class TechnicalEngine:
         h4_closes = [bar.close for bar in context]
         h4_fast_value = ema(h4_closes, h4_fast)[-1]
         h4_slow_value = ema(h4_closes, h4_slow)[-1]
+        h4_atr_values = atr(list(context), self.h4_atr_period)
+        h4_atr_value = h4_atr_values[-1]
         if h4_fast_value is None or h4_slow_value is None:
             return TechnicalView(
                 as_of_utc=decision_time,
@@ -167,6 +170,18 @@ class TechnicalEngine:
                 bars_used=len(execution),
                 context_bars_used=len(context),
             )
+        h4_atr_pct = 0.0
+        if h4_atr_value is not None:
+            h4_atr_pct = h4_atr_value / h4_closes[-1] if h4_closes[-1] else 0.0
+            h4_trend_gap = (h4_fast_value - h4_slow_value) / h4_slow_value if h4_slow_value else 0.0
+            if abs(h4_trend_gap) >= 0.01:
+                h4_regime = "TREND_" + ("UP" if h4_trend_gap > 0.0 else "DOWN")
+            elif h4_atr_pct >= 0.002:
+                h4_regime = "VOLATILE"
+            else:
+                h4_regime = "RANGE"
+        else:
+            h4_regime = "UNKNOWN"
         h4_context = h4_fast_value > h4_slow_value
         m15_trigger = (
             trend_signal > 0
@@ -207,6 +222,8 @@ class TechnicalEngine:
             "prior_low": float(prior_low),
             "h4_ema_fast": float(h4_fast_value),
             "h4_ema_slow": float(h4_slow_value),
+            "h4_atr_pct": float(h4_atr_pct),
+            "h4_regime": h4_regime,
             "spread_points": float(spread),
         }
         reasons = [
