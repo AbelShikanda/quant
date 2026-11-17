@@ -1021,10 +1021,10 @@ h1,h2,h3{margin:0;font-weight:700}
 @keyframes spinSlow{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 @keyframes spinReverse{from{transform:rotate(0)}to{transform:rotate(-360deg)}}
 @keyframes breathe{0%,100%{opacity:.4}50%{opacity:.75}}
-.manager-core{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;z-index:1;pointer-events:none}
-.manager-label{font-size:10px;letter-spacing:.12em;color:var(--muted)}
-.manager-decision{font-size:26px;font-weight:800;letter-spacing:.08em;color:var(--gold);line-height:1.1;margin-top:4px}
-.manager-status{font-size:9px;letter-spacing:.2em;color:var(--purple);text-transform:uppercase;margin-top:2px}
+.manager-core{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;z-index:2;pointer-events:none;background:rgba(5,5,5,.78);border:1px solid rgba(168,85,247,.35);border-radius:12px;padding:8px 14px;box-shadow:0 0 18px rgba(0,0,0,.6),inset 0 0 12px rgba(168,85,247,.12);backdrop-filter:blur(2px);width:max-content;max-width:170px}
+.manager-label{font-size:9px;letter-spacing:.16em;color:#d1d5db;text-transform:uppercase}
+.manager-decision{font-size:23px;font-weight:900;letter-spacing:.06em;color:#fde68a;line-height:1.15;margin-top:4px;text-shadow:0 0 10px rgba(251,191,36,.55),0 1px 2px #000}
+.manager-status{font-size:8px;letter-spacing:.18em;color:#c084fc;text-transform:uppercase;margin-top:4px;text-shadow:0 0 8px rgba(168,85,247,.8),0 1px 2px #000}
 .anatomy{width:100%;border:1px solid var(--border);border-radius:10px;background:#070707;padding:10px 12px;display:flex;flex-direction:column;gap:6px;text-align:left}
 .anatomy-title-row{display:flex;justify-content:space-between;align-items:baseline}
 .anatomy-title{margin:0;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
