@@ -145,26 +145,96 @@ function renderSteps(s) {
 
 function renderNotifications(items) {
   var list = byId('notificationsList');
-  var badge = byId('notificationsCount');
-  if (!list || !badge) { return; }
+  var badge = byId('bellBadge');
+  var summary = byId('bellSummary');
+  var bell = byId('bellBtn');
   items = items || [];
-  badge.textContent = String(items.length);
+  var pending = 0;
+  var i;
+  for (i = 0; i < items.length; i += 1) {
+    if (!items[i].completed) { pending += 1; }
+  }
+  if (badge) {
+    badge.textContent = String(pending);
+    badge.style.display = pending ? 'inline-flex' : 'none';
+  }
+  if (bell) {
+    bell.className = pending ? 'bell-btn bell-alert' : 'bell-btn bell-clear';
+    bell.setAttribute('aria-label', 'Notifications, ' + pending + ' pending');
+  }
+  if (summary) {
+    summary.textContent = pending ? (String(pending) + ' pending') : 'all clear';
+  }
+  if (!list) { return; }
   if (!items.length) {
-    list.innerHTML = '<li class="muted">All clear.</li>';
+    list.innerHTML = '<li class="muted notify-empty">All clear.</li>';
     return;
   }
   var html = '';
-  for (var i = 0; i < items.length; i += 1) {
+  for (i = 0; i < items.length; i += 1) {
     var item = items[i];
-    var link = item.link ? '<a href="' + escapeHtml(item.link) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(item.link_text || 'Open') + '</a>' : '';
-    html += '<li class="notify ' + escapeHtml(item.severity) + '">'
-      + '<div>' + (link ? link + '<div>' : '')
-      + '<strong>' + escapeHtml(item.title) + '</strong>'
+    var done = !!item.completed;
+    var action = '';
+    if (item.action === 'refresh') {
+      action = '<button class="notify-action refresh-btn" data-id="' + escapeHtml(item.id || '') + '" type="button"' + (done ? ' disabled' : '') + '>Refresh data</button>';
+    } else if (item.action === 'link' && item.link) {
+      action = '<a href="' + escapeHtml(item.link) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(item.link_text || 'Open') + '</a>';
+    }
+    var check = done
+      ? '<span class="notify-check" title="' + escapeHtml(item.proof || 'verified') + '">✓</span>'
+      : '';
+    html += '<li class="notify ' + escapeHtml(item.severity || 'info') + (done ? ' done' : '') + '">'
+      + '<div class="notify-body">'
+      + '<div class="notify-title-row"><strong>' + escapeHtml(item.title || '') + '</strong>' + check + '</div>'
       + (item.note ? '<p>' + escapeHtml(item.note) + '</p>' : '')
-      + '</div>' + (link ? '</div>' : '') + '</li>';
+      + '</div>'
+      + (action ? '<div class="notify-actions">' + action + '</div>' : '')
+      + '</li>';
   }
   list.innerHTML = html;
 }
+
+(function wireNotificationBell() {
+  var bellBtn = byId('bellBtn');
+  var dropdown = byId('notificationsDropdown');
+  var wrap = byId('bellWrap');
+  if (!bellBtn || !dropdown || !wrap) { return; }
+  function closeDropdown() {
+    dropdown.hidden = true;
+    bellBtn.setAttribute('aria-expanded', 'false');
+  }
+  bellBtn.addEventListener('click', function (ev) {
+    if (ev) { ev.stopPropagation(); }
+    dropdown.hidden = !dropdown.hidden;
+    bellBtn.setAttribute('aria-expanded', dropdown.hidden ? 'false' : 'true');
+  });
+  dropdown.addEventListener('click', function (ev) {
+    if (ev) { ev.stopPropagation(); }
+  });
+  document.addEventListener('click', function () { closeDropdown(); });
+  document.addEventListener('keydown', function (ev) {
+    if (ev && (ev.key === 'Escape' || ev.key === 'Esc')) { closeDropdown(); }
+  });
+  var list = byId('notificationsList');
+  if (list) {
+    list.addEventListener('click', function (ev) {
+      var target = ev.target || ev.srcElement;
+      if (!target || !target.className || String(target.className).indexOf('refresh-btn') === -1) { return; }
+      target.disabled = true;
+      var label = target.textContent;
+      target.textContent = 'Refreshing...';
+      postJson('/api/refresh-macro', {}, function (err, result) {
+        if (err) {
+          target.disabled = false;
+          target.textContent = label;
+          toast('Macro refresh failed: ' + err.message);
+          return;
+        }
+        toast(result && result.ok ? 'Macro refresh completed.' : 'Macro refresh finished with errors.');
+      });
+    });
+  }
+})();
 
 function renderLiveTrades(state) {
   var positions = state.open_positions || [];
@@ -718,15 +788,33 @@ h1,h2,h3{margin:0;font-weight:700}
 .override-toggle{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:#0a0a0a;color:var(--muted);font-weight:700;font-size:11px;cursor:pointer;user-select:none;white-space:nowrap}
 .override-toggle input{accent-color:#f59e0b;cursor:pointer;transform:scale(1.2)}
 .override-toggle.on{color:#fca5a5;border-color:#7f1d1d;box-shadow:0 0 14px rgba(239,68,68,.45)}
-.notifications-panel{margin-top:12px;padding:12px}
+.bell-wrap{position:relative;display:inline-flex}
+.bell-btn{position:relative;background:var(--panel2);border:1px solid var(--border);color:var(--muted);border-radius:10px;padding:8px 10px;cursor:pointer;transition:all .15s ease;line-height:0}
+.bell-btn:hover{border-color:#334155;color:var(--text)}
+.bell-btn:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.bell-clear{color:#4ade80;border-color:#166534}
+.bell-alert{color:#fca5a5;border-color:#7f1d1d;box-shadow:0 0 10px rgba(239,68,68,.25)}
+.bell-badge{position:absolute;top:-8px;right:-8px;min-width:20px;height:20px;padding:0 5px;border-radius:999px;background:#dc2626;color:#fff;font-size:10px;font-weight:800;display:inline-flex;align-items:center;justify-content:center;border:2px solid var(--bg)}
+.bell-dropdown{position:absolute;top:calc(100% + 10px);right:0;width:400px;max-width:92vw;max-height:440px;overflow-y:auto;background:var(--panel);border:1px solid var(--border);border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,.65);z-index:50;padding:12px}
+.bell-dropdown[hidden]{display:none}
+.bell-dropdown-header{display:flex;align-items:center;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--border);margin-bottom:8px}
+.bell-dropdown-footer{margin-top:8px;border-top:1px solid var(--border);padding-top:8px;font-size:10px}
 .notifications{display:flex;flex-direction:column;gap:8px;list-style:none;margin:0;padding:0}
-.notify{display:flex;gap:12px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
-.notify strong{font-size:11px}
-.notify p{margin:2px 0 0;color:var(--muted);font-size:11px}
+.notify{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
 .notify.warning{border-color:#7f1d1d;background:#1f0404}
 .notify.info{border-color:#164e63;background:#07161f}
-.notify a{color:var(--gold);text-decoration:none;font-weight:700;white-space:nowrap}
-.notify a:hover{text-decoration:underline}
+.notify.done{opacity:.6}
+.notify-body{min-width:0}
+.notify-title-row{display:flex;align-items:center;gap:8px}
+.notify-title-row strong{font-size:11px}
+.notify p{margin:2px 0 0;color:var(--muted);font-size:11px}
+.notify-actions{flex-shrink:0}
+.notify-action{background:#111;border:1px solid #155e75;color:#67e8f9;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap}
+.notify-action:hover:not(:disabled){border-color:#22d3ee}
+.notify-action:disabled{opacity:.5;cursor:default}
+.notify-check{color:#4ade80;font-weight:800}
+.notify-empty{justify-content:center}
+.refresh-btn{letter-spacing:.02em}
 .layout{display:grid;grid-template-columns:330px 1fr 370px;gap:14px;margin-top:12px}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px}
 .node-panel{padding:12px}
@@ -865,18 +953,26 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
       <input type="checkbox" id="overrideBlocksToggle" />
       <span>DEMO OVERRIDE</span>
     </label>
+    <div class="bell-wrap" id="bellWrap">
+      <button id="bellBtn" class="bell-btn" type="button" aria-label="Notifications" aria-expanded="false" aria-controls="notificationsDropdown">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 22a2.4 2.4 0 0 0 2.4-2.4H9.6A2.4 2.4 0 0 0 12 22zm8-6.2-1.7-2.4v-5.2c0-3.1-1.7-5.6-4.4-6.4V6.6a1.9 1.9 0 0 0-3.8 0v1.2C7.4 3.7 5.7 6.1 5.7 9.2v5.2L4 15.8c-.4.7.1 1.5.9 1.5h14.2c.8 0 1.3-.8.9-1.5z"/></svg>
+        <span id="bellBadge" class="bell-badge">0</span>
+      </button>
+      <div id="notificationsDropdown" class="bell-dropdown" role="dialog" aria-label="Notifications" hidden>
+        <div class="bell-dropdown-header">
+          <span class="panel-title">Notifications</span>
+          <span id="bellSummary" class="muted">—</span>
+        </div>
+        <ul id="notificationsList" class="notifications"></ul>
+        <div class="bell-dropdown-footer muted">Completion is proven (macro files / ledger evidence), never by clicking. The WGC item clears only with the owner&rsquo;s monthly download.</div>
+      </div>
+    </div>
   </div>
 </header>
 
 <div id="overrideBanner" class="banner banner-danger" style="display:none">DEMO OVERRIDE ACTIVE - macro/fusion gates are bypassed. This will place a bare 0.01 XAUUSD demo order if you click Accept &amp; Execute. For testing only.</div>
 
-<section class="panel notifications-panel" id="notificationsPanel">
-  <div class="chart-header">
-    <h2 class="panel-title">Needs your attention</h2>
-    <span id="notificationsCount" class="badge badge-red">0</span>
-  </div>
-  <ul id="notificationsList" class="notifications"></ul>
-</section>
+
 
 <section class="panel profile-panel" id="profilePanel">
   <div class="profile-left">

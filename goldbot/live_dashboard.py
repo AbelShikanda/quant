@@ -10,11 +10,14 @@ ledger writer.
 
 from __future__ import annotations
 
+import csv
 import html
+import io
 import json
 import sqlite3
 import subprocess
 import threading
+import time
 from collections import deque
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -22,7 +25,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
-import time
+
+import yaml
 
 DEFAULT_LEDGER = Path("reports/demo.execution.ledger.sqlite")
 DEFAULT_HOST = "127.0.0.1"
@@ -289,6 +293,11 @@ def load_state(
         state["message"] = "Ledger not found. Start the agent or run a paper replay."
         return state
 
+    proofs: dict[str, Any] = {
+        "reconnect_drill": None,
+        "kill_switch_drill": None,
+        "refresh_macro": None,
+    }
     try:
         connection = _read_only_connection(path)
     except sqlite3.Error as exc:
@@ -380,8 +389,11 @@ def load_state(
             count, error = _count(connection, table)
             counts[table] = count
             _add_error(errors, error)
+        proofs = _ledger_proofs(connection)
     finally:
         connection.close()
+    proofs["macro"] = _macro_freshness()
+    state["proofs"] = proofs
 
     run_summary = _json_dict(latest_run.get("summary_json")) if latest_run else {}
     account_trade_mode = run_summary.get("account_trade_mode")
@@ -636,38 +648,181 @@ def _profile_key(profile_path: str) -> str:
     return target.stem
 
 
+def _macro_freshness() -> dict[str, Any]:
+    """File-driven freshness for the binding FRED inputs (read-only).
+
+    Reads the manifest limits but NEVER writes them. The binding broad_usd
+    file honours the loader's ALFRED-vintage precedence.
+    """
+    from .refresh import _latest_observation, _value_column, _validate_fred_csv
+
+    limits: dict[str, Any] = {}
+    try:
+        scope = yaml.safe_load((ROOT / "config" / "scope.gold.v1.yaml").read_text(encoding="utf-8"))
+        limits = dict(
+            ((scope or {}).get("strategy", {}) or {}).get("fundamental", {}).get("stale_after_days", {}) or {}
+        )
+    except Exception:  # noqa: BLE001 - fall back to the manifest defaults
+        limits = {}
+
+    def limit_for(key: str, default: int) -> int:
+        try:
+            return int(limits.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    broad_limit = limit_for("broad_usd", 5)
+    ry_limit = limit_for("real_yield_10y", 5)
+    be_limit = limit_for("breakeven_10y", 5)
+
+    macro_dir = ROOT / "data" / "raw" / "macro"
+    broad_file = macro_dir / (
+        "ALFRED_DTWEXBGS.csv" if (macro_dir / "ALFRED_DTWEXBGS.csv").exists() else "DTWEXBGS.csv"
+    )
+    files = [
+        ("DFII10", macro_dir / "DFII10.csv", "DFII10", ry_limit),
+        ("DTWEXBGS", broad_file, "DTWEXBGS", broad_limit),
+        ("T10YIE", macro_dir / "T10YIE.csv", "T10YIE", be_limit),
+    ]
+    series: list[dict[str, Any]] = []
+    all_ok = True
+    today = _utc_now().date()
+    for series_id, path, column_hint, limit in files:
+        entry: dict[str, Any] = {
+            "series_id": series_id,
+            "path": str(path),
+            "limit_days": limit,
+            "latest_date": None,
+            "age_days": None,
+            "ok": False,
+            "error": None,
+        }
+        if not path.exists():
+            entry["error"] = "file missing"
+            series.append(entry)
+            all_ok = False
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            fieldnames = list(csv.DictReader(io.StringIO(text.lstrip("\ufeff"))).fieldnames or [])
+            value_column = _value_column(fieldnames, column_hint)
+            latest = _latest_observation(text, value_column) if value_column else None
+            if latest is None:
+                entry["error"] = "no parseable observations"
+                all_ok = False
+            else:
+                entry["latest_date"] = latest.isoformat()
+                entry["age_days"] = (today - latest).days
+                entry["ok"] = entry["age_days"] <= limit
+                if not entry["ok"]:
+                    all_ok = False
+        except Exception as exc:  # noqa: BLE001 - report, don't crash the dashboard
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+            all_ok = False
+        series.append(entry)
+
+    return {
+        "ok": all_ok,
+        "series": series,
+        "checked_at_utc": _utc_now().isoformat(),
+    }
+
+
+def _ledger_proofs(connection) -> dict[str, Any]:
+    """Completion proofs for manual/promotion items, read from the ledger."""
+    proofs: dict[str, Any] = {
+        "reconnect_drill": None,
+        "kill_switch_drill": None,
+        "refresh_macro": None,
+    }
+    try:
+        rows = connection.execute(
+            "SELECT component, MAX(logged_at_utc) FROM logs "
+            "WHERE component IN ('reconnect_drill', 'kill_switch', 'kill_switch_drill', 'refresh_macro') "
+            "GROUP BY component"
+        ).fetchall()
+        by_log = {str(row[0]): row[1] for row in rows}
+    except sqlite3.Error:
+        by_log = {}
+    try:
+        rows = connection.execute(
+            "SELECT category, MAX(opened_at_utc) FROM incidents "
+            "WHERE category IN ('reconnect_drill', 'kill_switch', 'kill_switch_drill') "
+            "GROUP BY category"
+        ).fetchall()
+        by_incident = {str(row[0]): row[1] for row in rows}
+    except sqlite3.Error:
+        by_incident = {}
+
+    def _latest(*keys: str) -> Any:
+        values = [by_log.get(key) for key in keys] + [by_incident.get(key) for key in keys]
+        values = [value for value in values if value]
+        return max(values) if values else None
+
+    proofs["reconnect_drill"] = _latest("reconnect_drill")
+    proofs["kill_switch_drill"] = _latest("kill_switch", "kill_switch_drill")
+    proofs["refresh_macro"] = by_log.get("refresh_macro")
+    return proofs
+
+
 def _build_notifications(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Notifications for the bell. Completion is proven, never guessed.
+
+    - macro freshness is verified live from the binding FRED/ALFRED files
+      (manifest stale limits are read, never rewritten);
+    - drill completion is proven from the ledger (events/incidents);
+    - the WGC item is HUMAN_JUDGMENT and can never be auto-cleared.
+    """
     notifications: list[dict[str, Any]] = []
-    fundamentals = state.get("fundamentals") or {}
+    proofs = state.get("proofs") or {}
 
-    for stale in fundamentals.get("stale_inputs", []):
-        notifications.append(
-            {
-                "severity": "warning",
-                "id": f"stale:{stale}",
-                "title": f"{stale} is stale",
-                "note": "FRED publishes this weekly; the bot will stay blocked until the next release. Check the FRED download page and replace data/raw/macro/DTWEXBGS.csv if it appears.",
-            }
-        )
-
-    for missing in fundamentals.get("missing_inputs", []):
-        notifications.append(
-            {
-                "severity": "warning",
-                "id": f"missing:{missing}",
-                "title": f"{missing} is missing",
-                "note": "The bot will stay blocked until this file is present. Save it under data/raw/macro/ with the exact filename the manifest expects.",
-            }
-        )
-
+    # --- macro freshness -------------------------------------------------
+    macro = proofs.get("macro") or {}
+    macro_ok = bool(macro.get("ok"))
+    series_text = ", ".join(
+        f"{item.get('series_id')}={item.get('latest_date') or 'n/a'} "
+        f"({'ok' if item.get('age_days') is not None and item.get('age_days') <= item.get('limit_days') else 'STALE'})"
+        for item in macro.get("series", [])
+    )
     notifications.append(
         {
-            "severity": "info",
+            "id": "macro_data",
+            "severity": "info" if macro_ok else "warning",
+            "title": "Macro data is fresh" if macro_ok else "Macro data is stale or missing",
+            "note": (
+                (
+                    f"All binding FRED inputs are within their manifest limits and fresh enough for gating "
+                    f"({series_text}). Verified from data/raw/macro at {macro.get('checked_at_utc', 'n/a')}."
+                )
+                if macro_ok
+                else (
+                    f"The bot stays blocked on stale/missing macro data ({series_text or 'no files readable'}). "
+                    "Use the Refresh button to re-download from FRED. The 5-day broad_usd limit applies as written "
+                    "in the manifest and is never widened."
+                )
+            ),
+            "action": "refresh",
+            "completed": macro_ok,
+            "proof": (
+                f"macro files verified {macro.get('checked_at_utc')}"
+                if macro_ok
+                else None
+            ),
+        }
+    )
+
+    # --- WGC central-bank gold (human download; never auto-clears) --------
+    notifications.append(
+        {
             "id": "wgc_central_bank_manual",
+            "severity": "info",
             "title": "Central-bank gold file (WGC / IMF)",
-            "note": "Diagnostic only; weight = 0.00. Not consumed by the overseer. Save as data/manual/wgc/world_official_gold_holdings.xlsx. Do not commit it.",
+            "note": "Diagnostic only; weight = 0.00. Not consumed by the overseer. Save as data/manual/wgc/world_official_gold_holdings.xlsx. Do not commit it. Refreshed monthly by the human owner.",
+            "action": "link",
             "link": WGC_XLSX_URL,
             "link_text": "Download the Excel file",
+            "completed": False,
+            "proof": None,
         }
     )
 
@@ -679,31 +834,59 @@ def _build_notifications(state: dict[str, Any]) -> list[dict[str, Any]]:
     if not signoff_exists:
         notifications.append(
             {
-                "severity": "warning",
                 "id": "human.signoff",
+                "severity": "warning",
                 "title": "M1 sign-off not recorded",
                 "note": "reports/m1.signoff.json is missing. Record it after reviewing the M1 validator report.",
+                "action": "none",
+                "completed": False,
+                "proof": None,
             }
         )
 
+    # --- kill switch drill (proven by the ledger) --------------------------
+    kill_proof = proofs.get("kill_switch_drill")
     notifications.append(
         {
-            "severity": "info",
             "id": "kill_switch_drill",
-            "title": "Kill-switch drill not done",
-            "note": "Required before promotion. The dashboard can narrate the drill; the bot process must actually perform flatten/halt and prove it wrote to the ledger.",
+            "severity": "info" if kill_proof else "warning",
+            "title": "Kill-switch drill recorded" if kill_proof else "Kill-switch drill not done",
+            "note": (
+                f"Kill-switch evidence recorded in the ledger at {kill_proof}."
+                if kill_proof
+                else (
+                    "Required before promotion. Clears automatically once kill-switch evidence "
+                    "(component/category 'kill_switch' or 'kill_switch_drill') is recorded in the ledger."
+                )
+            ),
+            "action": "none",
+            "completed": bool(kill_proof),
+            "proof": kill_proof,
         }
     )
 
+    # --- reconnect drill (proven by the ledger) ----------------------------
+    reconnect_proof = proofs.get("reconnect_drill")
     notifications.append(
         {
-            "severity": "info",
             "id": "reconnect_drill",
-            "title": "Reconnect drill not done",
-            "note": "Required before promotion. Disconnect MT5 and prove the bot recovers deterministically without duplicating orders or losing the position.",
+            "severity": "info" if reconnect_proof else "warning",
+            "title": "Reconnect drill recorded" if reconnect_proof else "Reconnect drill not done",
+            "note": (
+                f"Reconnect evidence recorded in the ledger at {reconnect_proof}."
+                if reconnect_proof
+                else (
+                    "Required before promotion. Clears automatically once a reconnect-drill "
+                    "evidence record is in the ledger (goldbot reconnect-drill)."
+                )
+            ),
+            "action": "none",
+            "completed": bool(reconnect_proof),
+            "proof": reconnect_proof,
         }
     )
 
+    notifications.sort(key=lambda item: (bool(item.get("completed")), item.get("id") or ""))
     return notifications
 
 
@@ -901,6 +1084,20 @@ def _close_position_command(
         "XAUUSD",
         "--reason",
         reason,
+        "--ledger",
+        EXECUTION_LEDGER,
+    ]
+
+
+def _refresh_macro_command() -> list[str]:
+    return _python_command() + [
+        "-m",
+        "goldbot.cli",
+        "refresh-macro",
+        "--manifest",
+        str(ROOT / "config" / "scope.gold.v1.yaml"),
+        "--macro-dir",
+        str(ROOT / "data" / "raw" / "macro"),
         "--ledger",
         EXECUTION_LEDGER,
     ]
@@ -1184,6 +1381,42 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
                 return
             _append_log("INFO", f"decline logged: {reason}")
             _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True})
+            return
+
+        if path == "/api/refresh-macro":
+            cmd = _refresh_macro_command()
+            _append_log("INFO", "macro refresh requested from dashboard")
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+            except subprocess.TimeoutExpired:
+                _json_response(
+                    self,
+                    HTTPStatus.GATEWAY_TIMEOUT,
+                    {"v": 1, "ok": False, "error": "macro refresh timed out"},
+                )
+                return
+            output = (
+                (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+            ).strip()
+            for line in output.splitlines():
+                _append_log("INFO", f"[refresh-macro] {line}")
+            ok = proc.returncode == 0
+            _json_response(
+                self,
+                HTTPStatus.OK if ok else HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "v": 1,
+                    "ok": ok,
+                    "exit_code": proc.returncode,
+                    "output": output.splitlines()[-20:],
+                },
+            )
             return
 
         if path == "/api/agent/close-position":

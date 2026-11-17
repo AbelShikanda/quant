@@ -724,6 +724,21 @@ def _cmd_refresh_macro(args: argparse.Namespace) -> int:
         print(f"refresh-macro failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
+    if args.ledger:
+        try:
+            with Ledger(args.ledger) as ledger:
+                ledger.log_event(
+                    level="INFO" if result.ok else "WARNING",
+                    component="refresh_macro",
+                    event_type="refresh_macro",
+                    message=("macro refresh OK" if result.ok else "macro refresh FAILED"),
+                    correlation_id=None,
+                    payload=result.to_dict(),
+                    logged_at_utc=result.generated_at_utc,
+                )
+        except Exception as exc:  # noqa: BLE001 - never fail a download over logging
+            print(f"warning: could not log refresh_macro to ledger: {exc}", file=sys.stderr)
+
     payload = json.dumps(result.to_dict(), indent=2, ensure_ascii=False, default=str)
     if args.json_output:
         print(payload)
@@ -1254,6 +1269,11 @@ def build_parser() -> argparse.ArgumentParser:
     refresh_macro_cmd.add_argument("--manifest", default="config/scope.gold.v1.yaml")
     refresh_macro_cmd.add_argument("--macro-dir", default="data/raw/macro")
     refresh_macro_cmd.add_argument("--json-output", action="store_true")
+    refresh_macro_cmd.add_argument(
+        "--ledger",
+        default=None,
+        help="optional execution ledger; logs refresh_macro as evidence (best-effort, non-fatal)",
+    )
     refresh_macro_cmd.set_defaults(func=_cmd_refresh_macro)
 
     recon_drill = subparsers.add_parser(
