@@ -550,6 +550,9 @@ def run_demo_preflight(
                     peak_equity=equity,
                 )
                 strategy = StrategyEngine(manifest)
+                from .econ_calendar import blackout_at
+
+                blocked, blackout_event, _ = blackout_at(as_of)
                 decision = strategy.decide(
                     execution_bars=execution_bars,
                     context_bars=context_series,
@@ -558,6 +561,7 @@ def run_demo_preflight(
                     equity=equity,
                     position=None,
                     risk_state=risk_state,
+                    news_blackout=blocked,
                 )
                 fundamental = decision.fundamental
                 missing = list(fundamental.missing_inputs)
@@ -575,6 +579,19 @@ def run_demo_preflight(
                     stale_inputs=stale,
                     fundamental_score=fundamental.score,
                     source_versions=fundamental.source_versions,
+                )
+                _add(
+                    items,
+                    "news_blackout",
+                    BLOCKED if blocked else PASS,
+                    (
+                        f"news blackout active: {blackout_event.label} until {blackout_event.blackout_end_utc.isoformat()}"
+                        if blocked and blackout_event is not None
+                        else "no blackout event inside the current window"
+                    ),
+                    blocked=blocked,
+                    event_id=blackout_event.event_id if blocked and blackout_event else None,
+                    ends_at_utc=blackout_event.blackout_end_utc.isoformat() if blocked and blackout_event else None,
                 )
                 _add(
                     items,

@@ -19,6 +19,7 @@ from typing import Any
 from .contracts import RiskState, StrategyDecision, ensure_utc, utc_now
 from .data import BarSeries, MT5DataFeed, load_macro_directory
 from .demo import _latest_closed_bar
+from .econ_calendar import blackout_at
 from .ledger import Ledger
 from .manifest import as_dict, manifest_hash
 from .strategy import StrategyEngine
@@ -254,6 +255,12 @@ def run_agent_loop(
                             _log("[agent] WARN no closed execution bar; skipping")
                         else:
                             as_of = latest_bar.time_utc + timedelta(minutes=execution_minutes)
+                            blocked, blackout_event, _ = blackout_at(as_of)
+                            if blocked and blackout_event is not None:
+                                _log(
+                                    f"[agent] NEWS BLACKOUT: {blackout_event.label}; "
+                                    f"entries blocked until {blackout_event.blackout_end_utc.isoformat()}"
+                                )
                             decision = strategy.decide(
                                 execution_bars=m15,
                                 context_bars=h4,
@@ -262,6 +269,7 @@ def run_agent_loop(
                                 equity=equity,
                                 position=None,
                                 risk_state=risk_state,
+                                news_blackout=blocked,
                             )
                             ledger.record_chart_bars(
                                 scope_id=scope_id,

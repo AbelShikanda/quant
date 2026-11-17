@@ -711,6 +711,153 @@ def _cmd_reconnect_drill(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def _cmd_calendar(args: argparse.Namespace) -> int:
+    """Print the Tier-1 macro calendar and current blackout status."""
+    from .econ_calendar import all_events, blackout_at, upcoming
+    from .contracts import utc_now
+
+    now = utc_now()
+    blocked, event, minutes_until = blackout_at(now)
+
+    if args.json_output:
+        payload = {
+            "now_utc": now.isoformat(),
+            "blackout": blocked,
+            "next_or_active": event.to_dict() if event else None,
+            "minutes_until_end" if blocked else "minutes_until_blackout": minutes_until,
+            "events": [e.to_dict() for e in upcoming(now, args.horizon_days)],
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(f"now: {now.isoformat()}")
+        if blocked and event is not None:
+            print(f"BLACKOUT ACTIVE: {event.label} (until {event.blackout_end_utc.isoformat()})")
+        else:
+            print(f"no blackout active; next event in {minutes_until:.0f} minutes" if minutes_until else "no upcoming events")
+        print(f"upcoming ({args.horizon_days}d):")
+        for e in upcoming(now, args.horizon_days):
+            print(f"  {e.blackout_start_utc.isoformat()}  [{e.category:>3s}]  {e.label}")
+    return 0
+
+
+def _cmd_news_stress(args: argparse.Namespace) -> int:
+    """Replay a long entry after each major event; report stop-hits and gaps."""
+    from .news_stress import run_news_stress
+
+    try:
+        report = run_news_stress(
+            source=args.source,
+            bars=args.bars,
+            broker_utc_offset_minutes=args.broker_utc_offset_minutes,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface, don't crash
+        print(f"news-stress failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    if not report.get("ok", True):
+        print(f"news-stress failed: {report.get('error')}", file=sys.stderr)
+        return 2
+
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+        print(f"news-stress report written: {out_path}")
+    if args.json_output:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    else:
+        print(f"news-stress: source={report['source']} events={report['summary']['events']} stops hit={report['summary']['stop_hits']} rate={report['summary']['stop_hit_rate_pct']}%")
+        for case in report["cases"][:20]:
+            print(f"  {case['label']:55s} entry={case['entry']} stop={case['stop']} hit={case['stop_hit']} gap%={case['gap_pct']}")
+        if len(report["cases"]) > 20:
+            print(f"  ... and {len(report['cases']) - 20} more (see {args.output or '--json-output'})")
+    return 0 if report.get("source") == "mt5" else 1
+
+
+def _cmd_explain(args: argparse.Namespace) -> int:
+    """Reconstruct a decision (or the latest) from the ledger."""
+    from .traceability import reconstruct, render_markdown
+
+    report = reconstruct(
+        ledger_path=args.ledger,
+        decision_id=args.decision_id,
+        latest=args.latest,
+    )
+    if not report.get("found"):
+        print(f"explain: {report.get('error', 'not found')}", file=sys.stderr)
+        return 1
+
+    markdown = render_markdown(report)
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(markdown, encoding="utf-8")
+        print(f"explain written: {out_path}")
+    if args.json_output:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    else:
+        print(markdown)
+    return 0
+
+
+def _cmd_spread_sample(args: argparse.Namespace) -> int:
+    """Sample bid/ask for N seconds and append to reports/spread_history.csv."""
+    from .spread import CSV_PATH, append_samples, sample_once
+    from .data import MT5DataFeed
+    import time
+
+    feed = MT5DataFeed(
+        symbol=args.symbol, broker_utc_offset_minutes=args.broker_utc_offset_minutes
+    )
+    try:
+        feed.connect()
+        samples = []
+        deadline = time.monotonic() + args.seconds
+        while time.monotonic() < deadline:
+            sample = sample_once(feed)
+            if sample is not None:
+                samples.append(sample)
+            time.sleep(args.interval_seconds)
+    except Exception as exc:  # noqa: BLE001 - surface, don't crash
+        print(f"spread-sample failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        try:
+            feed.close()
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+
+    if not samples:
+        print("spread-sample: no ticks captured (market may be closed)", file=sys.stderr)
+        return 1
+    count = append_samples(samples, Path(args.csv))
+    print(f"spread-sample: appended {count} samples to {args.csv}")
+    return 0
+
+
+def _cmd_spread_report(args: argparse.Namespace) -> int:
+    """Print spread percentiles overall and per hour-of-day."""
+    from .spread import report
+
+    payload = report(Path(args.csv))
+    if args.json_output:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(f"spread-report: samples={payload['samples']}")
+        overall = payload.get("overall", {})
+        if overall.get("n"):
+            print(
+                f"  overall: min={overall['min']:.1f} p50={overall['p50']:.1f} "
+                f"p90={overall['p90']:.1f} p99={overall['p99']:.1f} max={overall['max']:.1f} points"
+            )
+            for hour, stats in payload.get("by_hour_utc", {}).items():
+                if stats.get("n"):
+                    print(f"  hour {hour:>2}: n={stats['n']} p50={stats['p50']:.1f} p99={stats['p99']:.1f} max={stats['max']:.1f}")
+        else:
+            print("  no samples yet; run `goldbot spread-sample` first")
+    return 0
+
+
 def _cmd_health(args: argparse.Namespace) -> int:
     """Read-only health check: halt flag, MT5 probe, ledger activity age."""
     from .health import run_health
@@ -1390,6 +1537,55 @@ def build_parser() -> argparse.ArgumentParser:
     close_pos.add_argument("--report", help="write full JSON report")
     close_pos.add_argument("--json", action="store_true", help="print summary JSON")
     close_pos.set_defaults(func=_cmd_close_position)
+
+    calendar_cmd = subparsers.add_parser(
+        "calendar",
+        help="print Tier-1 macro calendar with blackout status (FOMC/CPI/NFP/PCE/auctions)",
+    )
+    calendar_cmd.add_argument("--horizon-days", type=int, default=14)
+    calendar_cmd.add_argument("--json-output", action="store_true")
+    calendar_cmd.set_defaults(func=_cmd_calendar)
+
+    stress = subparsers.add_parser(
+        "news-stress",
+        help="replay a long after each major event; report stop-hits and gaps (read-only)",
+    )
+    stress.add_argument("--source", choices=["mt5", "synthetic"], default="mt5")
+    stress.add_argument("--bars", type=int, default=1600)
+    stress.add_argument("--broker-utc-offset-minutes", type=int, default=120)
+    stress.add_argument("--output", default=None, help="write full JSON report here")
+    stress.add_argument("--json-output", action="store_true")
+    stress.set_defaults(func=_cmd_news_stress)
+
+    explain = subparsers.add_parser(
+        "explain",
+        help="reconstruct a decision (from the ledger) for human review; never re-runs the strategy",
+    )
+    explain.add_argument("--ledger", default="reports/demo.execution.ledger.sqlite")
+    explain.add_argument("--decision-id", default=None, help="exact id or unique prefix")
+    explain.add_argument("--latest", action="store_true", help="use the most recent decision")
+    explain.add_argument("--output", default=None, help="write Markdown report here")
+    explain.add_argument("--json-output", action="store_true")
+    explain.set_defaults(func=_cmd_explain)
+
+    sample = subparsers.add_parser(
+        "spread-sample",
+        help="sample bid/ask for N seconds into reports/spread_history.csv (append)",
+    )
+    sample.add_argument("--symbol", default="XAUUSD")
+    sample.add_argument("--seconds", type=int, default=60)
+    sample.add_argument("--interval-seconds", type=float, default=1.0)
+    sample.add_argument("--csv", default="reports/spread_history.csv")
+    sample.add_argument("--broker-utc-offset-minutes", type=int, default=120)
+    sample.set_defaults(func=_cmd_spread_sample)
+
+    spread_report = subparsers.add_parser(
+        "spread-report",
+        help="print spread percentiles overall and per hour-of-day (UTC)",
+    )
+    spread_report.add_argument("--csv", default="reports/spread_history.csv")
+    spread_report.add_argument("--json-output", action="store_true")
+    spread_report.set_defaults(func=_cmd_spread_report)
 
     health = subparsers.add_parser(
         "health",

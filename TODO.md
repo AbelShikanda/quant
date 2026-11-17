@@ -170,10 +170,10 @@ Done correctly means: safe, gated, and evidence-oriented â€” not merely "the cod
 ## Execution-quality and trust gaps (needed for live trading, not just demo)
 
 ### P0 â€” must exist before any live trading
-- [ ] Economic calendar with blackout windows (FOMC, CPI, PCE, NFP, Treasury auctions, Fed speakers, holidays)
-- [~] Fill quality: slippage now measured on demo fills (`slippage_points` recorded in ledger fills); latency and fill probability at size not yet measured
-- [ ] Tick/depth backtest to verify trades would have filled where expected
-- [ ] Stop quality under news stress (gap-through-stop simulations)
+- [x] Economic calendar with blackout windows: `goldbot/econ_calendar.py`, `goldbot calendar` — FOMC/CPI/NFP/PCE +/-30 min, Treasury auction +/-60 min (owner-approved 2026-11-17); wired into agent + demo-preflight gates; `news_blackout` preflight item; dates verified against FOMC/BLS/BEA/Treasury sources; 7 new tests
+- [~] Fill quality: slippage recorded on fills; latency/fill-probability not measured; spread-history sampler built (spread_history.csv; p50=28 p99=32 pts during hour 16; needs more samples)
+- [~] Tick/depth backtest: not done; MT5 provides ticks; FBS provides no market depth (probed) — needs its own effort; spread-history proxy built (see spread_history.csv; `goldbot spread-sample`/`spread-report`)
+- [~] Stop quality under news stress: `goldbot news-stress` built; real MT5 M15 bars: 4 of 10 events (4000 bars, Oct-Nov 2026) would have blown through a 1.5x-ATR stop (40%); blackout justified; full multi-year sweep still pending
 - [~] Supervisor/health-check (agent loop has stop file + halt flag; `goldbot health` probes MT5 + ledger activity age + halt flag, exit codes; verified HALTED with armed flag. Not a daemon/auto-respawn yet — a real supervisor is still open)
 
 ### P1 â€” strong edge needed for an honest demo record
@@ -181,11 +181,11 @@ Done correctly means: safe, gated, and evidence-oriented â€” not merely "the cod
 - [ ] Risk-correlation checks (e.g. correlated USD long/short vs gold positions)
 - [ ] Economic surprise factor (consensus vs actual)
 - [ ] Order-book/depth or spread-history proxy for fill probability at size
-- [ ] Traceability: at least one full human reconstruction proof from ledger logs
+- [~] Traceability: `goldbot explain <decision_id>` built for mechanical reconstruction (Markdown from the ledger, never re-runs the strategy). Human reconstruction proof still pending, by design
 - [ ] Regulatory/compliance memo for the broker terms (leverage, confirmation, permitted instruments)
 
 ### P2 â€” enhancements
-- [ ] Options/positioning diagnostic (futures already captured; no options-open-interest yet)
+- [ ] Options/positioning diagnostic (futures already captured; no options-open-interest data on FBS/free sources)
 - [ ] Live vs backtest drift monitoring with alerting
 - [ ] SELL-first-class review report for exits
 
