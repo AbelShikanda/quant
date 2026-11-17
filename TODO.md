@@ -63,7 +63,7 @@ Done correctly means: safe, gated, and evidence-oriented â€” not merely "the cod
 - [x] Entry rules for long-only
 - [x] No-trade filters: spread, session (disabled), news, volatility extremes, stale data vix
 - [~] Swing-break structure: implemented; failed-break/pivot confirmation not implemented
-- [x] H4 trend context implemented; range/volatility-regime classification not implemented
+- [x] H4 trend context + regime classification (`h4_regime` in `TechnicalView.indicators`: `TREND_UP/DOWN`/`VOLATILE`/`RANGE`/`UNKNOWN`; EMA gap >= 1% ? TREND, ATR >= 0.2% of price ? VOLATILE; else RANGE). Diagnostic only — not wired into entry gates
 - [x] Unit tests passed
 
 ### Fusion and overseer
