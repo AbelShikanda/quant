@@ -111,11 +111,11 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [x] Max drawdown flatten/halt enforced in paper risk state
 - [~] Headless MT5 order router with idempotency keys (guarded `demo-send` path has idempotency; no autonomous router yet — agent never sends)
 - [~] Pre-trade checks: scope, risk, margin, spread, session, symbol state (built into demo preflight; not yet shared with an autonomous router)
-- [~] Post-trade reconciliation against MT5 deals and positions (`goldbot reconcile` compares ledger vs broker positions, exit code non-zero on mismatch; verified MATCH on empty book; deals reconciliation still pending)
-- [ ] Kill switch drill: flatten and halt (`goldbot kill-switch` built: demo-only, exact phrase `FLATTEN AND HALT`, writes `kill-switch.halt` next to ledger, agent loop checks the flag and exits, incident recorded; guard refusal tested)
-- [x] Kill-switch UI placement: the owner must be able to fire the kill switch from the dashboard (red button, phrase-confirmed modal, spawns the guarded CLI; endpoint never auto-fires)
-- [ ] Kill-switch flatten-under-position drill: open a 0.01 demo position, fire the real kill switch, verify all positions closed + halt armed + incident recorded, mark the checklist
-- [x] Kill switch guard-chain drill recorded (`goldbot kill-switch --drill`, 2026-11-17, demo account 106806652 verified; no orders sent; halt flag NOT armed; incident `kill_switch_drill` in ledger; promotion gate still wants a flatten drill under an open position)
+- [~] Post-trade reconciliation against MT5 deals and positions (`goldbot reconcile` for positions, read-only, verified; used 2026-11-17 to catch two untracked override fills; deals-level still pending)
+- [x] Kill switch drill: flatten and halt (built, drilled under live positions 2026-11-17; incident `killswitch-70b65f13baf44ec0`; halt flag armed)
+- [x] Kill-switch UI placement: the owner fires the kill switch from the dashboard (red button, phrase-confirmed modal, spawns the guarded CLI; endpoint never auto-fires). Verified 2026-11-17 via `POST /api/agent/kill-switch`
+- [x] Kill-switch flatten-under-position drill (2026-11-17, via dashboard `POST /api/agent/kill-switch`): 2 open demo positions flattened at market, CRITICAL incident recorded, ledger closed with `close_reason=kill_switch` (P&L −2.71/−3.26), MT5 flat, `reconcile` MATCH (0/0), agent refuses to start while `reports/kill-switch.halt` exists
+- [x] Kill switch guard-chain drill recorded (`goldbot kill-switch --drill`, 2026-11-17, demo account 106806652 verified; no orders sent; halt flag NOT armed)
 - [x] Reconnect drill recorded (`goldbot reconnect-drill`, 2026-11-17, verdict PASS; incident + event in ledger)
 - [ ] No-chart-assumption tests
 
@@ -146,7 +146,7 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [x] Notifications panel with stale macro + WGC manual link
 - [x] Notification bell + dropdown, persisted until completed
 - [x] Notifications pruned to pending-only: only items needing consistent reconciliation are shown (macro freshness gate, WGC monthly, any pending drill/signoff); proven items disappear; "All clear" when empty
-- [x] WGC reconfirm flow: bell item (link + Reconfirm button) spawns `goldbot wgc-check` — picks the most recently downloaded XLSX, runs mechanical checks (parse, rows, sha256 vs refresh_event.json, age ≤ 90d), logs `wgc_check` evidence to the ledger; clears until the next monthly file lands; waiting/fail/stale/pass states verified
+- [x] WGC reconfirm flow: bell item (link + Reconfirm button) spawns `goldbot wgc-check` — newest XLSX must byte-match the manifest/review file (`world_official_gold_holdings.xlsx`, sha256-tallied, else status `review`); mechanical checks (parse, rows, sha256 vs refresh_event.json, age ≤ 90d); logs `wgc_check` evidence; clears until the next monthly file lands; waiting/fail/stale/review/pass states verified; M1 review evidence and bell tally (same file, same sha)
 - [ ] Inline refresh button for download-driven items (broad USD)
 - [ ] Failure independence from MT5 (dashboard keeps working if MT5 is down)
 - [ ] Authentication / remote access (not needed while loopback-only)
@@ -159,7 +159,7 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [ ] 100+ trades recorded
 - [ ] Positive OOS after costs
 - [ ] Drawdown within 0.25%/trade, 1.5% daily, 8% max drawdown
-- [ ] Kill switch drill passed
+- [x] Kill switch drill passed (demo, 2026-11-17, 2 positions flattened, halt armed, incident recorded)
 - [ ] Reconnect drill passed
 - [ ] Incident log / reviews complete
 - [ ] Human sign-off recorded
@@ -199,7 +199,7 @@ Order: 1 broker specs → 2 pre/post-trade checks → 3 idempotency/reconciliati
 - [ ] Step 1b — Broker terms review. Human item; owner must read the FBS client agreement for EA/Python automation on XAUUSD before any non-demo use. Web search surfaced only generic MetaTrader algotrading docs, not FBS-specific terms — must be done by the owner.
 - [~] **Step 2 — Pre- and post-trade checks.** Pre-trade checks live in the demo preflight (spread, stop distance, notional cap, risk %, symbol trade mode, offset confirmation). Post-trade: `goldbot reconcile` (positions, read-only, verified MATCH). Deals-level reconciliation still pending.
 - [x] **Step 3 — Idempotency.** Demo order path enforces `decision_id:ENTRY` idempotency keys; reconcile command detects ledger-only/broker-only positions.
-- [~] **Step 4 — Kill switch + reconnect drill.** Reconnect drill PASS and recorded (incident in ledger). Kill-switch guard-chain drill PASS and recorded (no orders, halt flag not armed). A flatten drill under an open position still needs the owner's go-ahead and an open demo position.
+- [x] **Step 4 — Kill switch + reconnect drill.** Reconnect drill PASS (incident in ledger). Kill-switch guard-chain drill PASS. Kill-switch flatten drill PASS under live positions (2026-11-17): 2 positions closed, halt armed, MT5 flat, reconcile MATCH, agent refuses to start with the halt flag present.
 - [~] **Step 4c — Freshness automation (unblocked the demo).** `goldbot refresh-macro` (FRED + existing ALFRED vintages, atomic, validated) cleared the `broad_usd` gate on 2026-11-17; manifest staleness limits untouched; strategy still reports NO_TRADE on its own signal.
 - [ ] Step 5 — Controlled demo fills → measure slippage/latency.
 - [ ] Step 6 — Promotion gates 1–7 (standard_1k only).
@@ -214,7 +214,8 @@ Order: 1 broker specs → 2 pre/post-trade checks → 3 idempotency/reconciliati
 - [ ] (Resolved 2026-11-17) Fresh `broad_usd` gap — closed via refresh; ALFRED vintage was the binding file.
 - [!] No `standard_1k` demo run outside the booked crash-recovered tests yet.
 - [!] No demo trade has been taken with the strategy's own signal (only manual override _testing_). As of 2026-11-17 the strategy reports NO_TRADE (score −0.585) — correctly no entry.
-- [!] Pilot gate, kill-switch, reconnect drills not performed in live MT5.
+- [!] Pilot gate, reconnect drill not performed in live MT5 (reconnect-drill + kill-switch flatten drills both done 2026-11-17; MT5 demo).
+- [!] Intent-first order flow missing: `demo-send` calls `send_order` BEFORE the ledger write; a ledger failure leaves the fill untracked (this happened 2026-11-17 — two orders hit the broker with ledger FK failure; positions backfilled via agent sync; reconcile caught the drift). Fix = record intent before broker send.
 - [!] OOS-after-costs not demonstrated on real fills.
 
 ---

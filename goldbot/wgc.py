@@ -24,6 +24,31 @@ from .ledger import Ledger
 WGC_DIR = Path("data/manual/wgc")
 MAX_AGE_DAYS = 90
 REMINDER_CADENCE_DAYS = 30
+MANIFEST_PATH = Path("config/scope.gold.v1.yaml")
+
+_WGC_MANIFEST_CACHE: Path | None = None
+
+
+def manifest_wgc_path(manifest_path: str | Path = MANIFEST_PATH) -> Path:
+    """The exact XLSX the validator/review checks (manifest source of truth)."""
+    global _WGC_MANIFEST_CACHE
+    if _WGC_MANIFEST_CACHE is not None:
+        return _WGC_MANIFEST_CACHE
+    fallback = Path("data/manual/wgc/world_official_gold_holdings.xlsx")
+    try:
+        import yaml
+
+        scope = yaml.safe_load(Path(manifest_path).read_text(encoding="utf-8"))
+        for source in scope.get("sources", []) or []:
+            if isinstance(source, dict) and source.get("id") == "wgc_central_bank_manual":
+                path = source.get("path")
+                if path:
+                    _WGC_MANIFEST_CACHE = Path(str(path))
+                    return _WGC_MANIFEST_CACHE
+    except Exception:  # noqa: BLE001 - fall back to the declared default
+        pass
+    _WGC_MANIFEST_CACHE = fallback
+    return _WGC_MANIFEST_CACHE
 
 
 def newest_wgc_xlsx(wgc_dir: str | Path = WGC_DIR) -> Path | None:
@@ -127,6 +152,7 @@ def run_wgc_check(
     generated_at = utc_now()
     directory = Path(wgc_dir)
     newest = newest_wgc_xlsx(directory)
+    review_path = manifest_wgc_path()
     report: dict[str, Any] = {
         "mode": "wgc_check",
         "generated_at_utc": generated_at.isoformat(),
@@ -134,6 +160,9 @@ def run_wgc_check(
         "status": "waiting",
         "file": None,
         "inspection": None,
+        "review_file": str(review_path),
+        "review_inspection": None,
+        "tallies_with_review": None,
         "refresh_event": None,
         "age_days": None,
         "sha_matches_refresh_event": None,
@@ -147,6 +176,21 @@ def run_wgc_check(
         )
     else:
         inspection = inspect_wgc_file(newest)
+        review_inspection = (
+            inspect_wgc_file(review_path) if review_path.exists() else None
+        )
+        newest_sha = str(inspection.get("sha256") or "").lower()
+        review_sha = str((review_inspection or {}).get("sha256") or "").lower()
+        # Tally rule: the file the review sees (manifest path) must be
+        # byte-identical to the newest file the reconfirm sees.
+        tallies = bool(
+            review_inspection
+            and review_inspection.get("parse_ok")
+            and review_sha
+            and review_sha == newest_sha
+        )
+        report["review_inspection"] = review_inspection
+        report["tallies_with_review"] = tallies
         event = _refresh_event(directory)
         event_sha = str(event.get("sha256") or "").strip().lower()
         file_sha = str(inspection.get("sha256") or "").lower()
@@ -176,6 +220,14 @@ def run_wgc_check(
             report["status"] = "fail"
             report["detail"] = (
                 "file sha256 does not match refresh_event.json; re-download or re-record the event"
+            )
+        elif not tallies:
+            report["status"] = "review"
+            report["detail"] = (
+                f"newest file ({newest.name}, sha256={newest_sha[:12]}…) does NOT tally with the "
+                f"manifest/review file ({review_path}, mtime={review_inspection.get('mtime') if review_inspection else 'missing'}). "
+                "Place the newest download under the manifest filename, or have the owner update "
+                "the manifest path (through the scope-change process) — then Reconfirm."
             )
         elif age is not None and age > MAX_AGE_DAYS:
             report["status"] = "fail"

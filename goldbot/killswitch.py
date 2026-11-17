@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -248,6 +248,83 @@ def run_kill_switch_drill(
     )
 
 
+def _record_flatten_in_ledger(
+    *,
+    ledger_path: str | Path,
+    closed: list[dict[str, Any]],
+    positions_by_ticket: dict[int, dict[str, Any]],
+    opened_at: datetime,
+) -> None:
+    """Mark flattened positions DEMO_CLOSED in the ledger, with computed P&L.
+
+    Keeps the ledger in agreement with the broker after a kill switch —
+    without this, a flatten would leave the ledger permanently showing open
+    positions and every subsequent reconcile would flag a phantom mismatch.
+    Inserts missing rows for broker positions the ledger never saw.
+    """
+    if not closed:
+        return
+    with Ledger(ledger_path) as ledger:
+        for item in closed:
+            ticket = int(item["ticket"])
+            exit_price = float(item.get("price") or 0.0)
+            broker = positions_by_ticket.get(ticket) or {}
+            open_price = float(broker.get("price_open") or 0.0)
+            volume = float(broker.get("volume") or 0.0)
+            side = "LONG" if int(broker.get("type", 0)) == 0 else "SELL"
+            direction = 1 if side == "LONG" else -1
+            realized_pnl = (
+                (exit_price - open_price) * volume * 100.0 * direction
+                if exit_price and open_price and volume
+                else None
+            )
+            row = ledger.connection.execute(
+                """
+                SELECT position_id FROM positions
+                WHERE broker_position_ticket = ? OR position_id = ?
+                LIMIT 1
+                """,
+                (ticket, f"broker-{ticket}"),
+            ).fetchone()
+            if row is None:
+                ledger.connection.execute(
+                    """
+                    INSERT OR IGNORE INTO positions
+                        (position_id, symbol, side, volume, open_price, open_time_utc,
+                         stop_loss, take_profit, close_price, close_time_utc,
+                         close_reason, realized_pnl, broker_position_ticket, state,
+                         raw_position_json)
+                    VALUES (?, 'XAUUSD', ?, ?, ?, ?, ?, ?, ?, ?,
+                            'kill_switch', ?, ?, 'DEMO_CLOSED', ?)
+                    """,
+                    (
+                        f"broker-{ticket}",
+                        side,
+                        volume,
+                        open_price,
+                        datetime.fromtimestamp(int(broker.get("time", 0) or 0), tz=timezone.utc),
+                        float(broker.get("sl") or 0.0) or None,
+                        float(broker.get("tp") or 0.0) or None,
+                        exit_price,
+                        opened_at.isoformat(),
+                        realized_pnl,
+                        ticket,
+                        str(broker),
+                    ),
+                )
+            else:
+                ledger.connection.execute(
+                    """
+                    UPDATE positions
+                    SET close_price = ?, close_time_utc = ?, close_reason = 'kill_switch',
+                        realized_pnl = ?, state = 'DEMO_CLOSED'
+                    WHERE position_id = ?
+                    """,
+                    (exit_price, opened_at.isoformat(), realized_pnl, row["position_id"]),
+                )
+        ledger.connection.commit()
+
+
 def halt_file_for(ledger_path: str | Path) -> Path:
     return Path(ledger_path).parent / "kill-switch.halt"
 
@@ -303,6 +380,7 @@ def run_kill_switch(
             )
 
         positions = feed.open_positions(symbol) or []
+        positions_by_ticket = {int(p.get("ticket")): p for p in positions if p.get("ticket")}
         for position in positions:
             ticket = position.get("ticket")
             try:
@@ -312,8 +390,11 @@ def run_kill_switch(
                     comment=close_comment,
                 )
                 retcode = int((result or {}).get("retcode", -1))
+                close_price = float((result or {}).get("price") or 0.0)
                 if retcode in {10008, 10009}:
-                    closed.append({"ticket": int(ticket), "retcode": retcode})
+                    closed.append(
+                        {"ticket": int(ticket), "retcode": retcode, "price": close_price}
+                    )
                 else:
                     failed.append(
                         {
@@ -326,6 +407,13 @@ def run_kill_switch(
                 failed.append(
                     {"ticket": ticket, "error": f"{type(exc).__name__}: {exc}"}
                 )
+
+        _record_flatten_in_ledger(
+            ledger_path=ledger_path,
+            closed=closed,
+            positions_by_ticket=positions_by_ticket,
+            opened_at=generated_at,
+        )
 
         halt_file.write_text(
             f"kill switch armed at {generated_at.isoformat()} by owner action\n",

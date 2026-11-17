@@ -775,6 +775,13 @@ def _cmd_wgc_check(args: argparse.Namespace) -> int:
         if report.get("inspection"):
             insp = report["inspection"]
             print(f"  rows={insp.get('rows')} sheets={insp.get('sheets')} sha256={(insp.get('sha256') or '')[:16]}")
+        if report.get("review_file"):
+            review_insp = report.get("review_inspection") or {}
+            print(
+                f"  review file: {report['review_file']} "
+                f"(sha256={(review_insp.get('sha256') or 'missing')[:16] if review_insp else 'missing'}) "
+                f"tallies={report.get('tallies_with_review')}"
+            )
         if report.get("age_days") is not None:
             print(f"  age: {report['age_days']} days")
         if report.get("ledger_warning"):

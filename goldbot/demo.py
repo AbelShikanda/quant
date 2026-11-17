@@ -716,6 +716,73 @@ def run_demo_preflight(
     )
 
 
+def _ensure_decision_persisted(
+    ledger: Ledger,
+    *,
+    preflight: DemoPreflightResult,
+    decision: StrategyDecision,
+    request: dict[str, Any],
+    manifest: dict[str, Any],
+    mode: str,
+) -> None:
+    """Persist snapshot/decision/run if they are not already recorded.
+
+    The normal preflight path persists everything; the override path does not.
+    Orders reference decisions by foreign key, so the override path must
+    record the decision (or its order would fail the FK).
+    """
+    existing = ledger.connection.execute(
+        "SELECT 1 FROM decisions WHERE decision_id = ? LIMIT 1",
+        (decision.decision_id,),
+    ).fetchone()
+    if existing is not None:
+        return
+
+    scope_id = str(manifest.get("scope_id", "gold.v1"))
+    execution_bar = str(as_dict(manifest.get("market")).get("execution_bar", "M15"))
+    context_bar = str(as_dict(manifest.get("market")).get("context_bar", "H4"))
+    started_at = decision.as_of_utc
+    run_id = hashlib.sha256(
+        f"{scope_id}:{started_at.isoformat()}:demo_order".encode("utf-8")
+    ).hexdigest()[:16]
+    ledger.start_run(
+        run_id=run_id,
+        scope_id=scope_id,
+        manifest_hash=preflight.manifest_hash,
+        started_at_utc=started_at,
+        summary={
+            "mode": mode,
+            "symbol": str(request.get("symbol")),
+            "account": preflight.account.get("login"),
+            "server": preflight.account.get("server"),
+            "equity": preflight.account.get("equity"),
+            "account_trade_mode": preflight.account.get("trade_mode"),
+            "terminal_connected": bool(preflight.terminal.get("connected", False)),
+            "trade_allowed": bool(preflight.terminal.get("trade_allowed", False)),
+            "tradeapi_disabled": bool(preflight.terminal.get("tradeapi_disabled", True)),
+            "status": "PENDING",
+            "broker_orders_sent": 0,
+        },
+        allow_multiple_runs=True,
+    )
+    ledger.record_decision(
+        decision,
+        scope_id=scope_id,
+        symbol=str(request.get("symbol")),
+        execution_bar=execution_bar,
+        context_bar=context_bar,
+        market={
+            "mode": mode,
+            "account": preflight.account,
+            "terminal": preflight.terminal,
+            "symbol": preflight.symbol,
+            "tick": preflight.tick,
+            "order_request": request,
+            "order_check": preflight.order_check,
+        },
+    )
+
+
 def _build_override_preflight(
     *,
     manifest: dict[str, Any],
@@ -1058,6 +1125,14 @@ def run_demo_order(
             "goldbot DEMO OVERRIDE" if override_blocks else "goldbot demo standard_1k"
         )
         with Ledger(ledger_path) as ledger:
+            _ensure_decision_persisted(
+                ledger,
+                preflight=preflight,
+                decision=decision,
+                request=request,
+                manifest=manifest,
+                mode="demo_order_override" if override_blocks else "demo_order",
+            )
             existing = ledger.connection.execute(
                 """
                 SELECT order_id, state FROM orders

@@ -729,25 +729,20 @@ def _macro_freshness() -> dict[str, Any]:
     }
 
 
-def _wgc_status(connection) -> dict[str, Any]:
-    """Monthly WGC/IMF manual XLSX status: newest file + mechanical checks + ledger proof.
+_WGC_REPORT_CACHE: dict[tuple, dict[str, Any]] = {}
 
-    ``completed`` is true only when (a) the newest XLSX parses, (b) it is fresh
-    (<= 30 days since last download), and (c) a wgc_check evidence log exists
-    in the ledger for this exact file sha256. The owner drops the file in,
-    hits Reconfirm, and the bell clears — until the next file lands.
+
+def _wgc_status(connection) -> dict[str, Any]:
+    """Monthly WGC/IMF manual XLSX status (single source of truth: run_wgc_check).
+
+    ``completed`` is true only when (a) the reconfirm passes — parse, rows,
+    sha vs refresh_event.json, age ≤ 90d, AND tally with the manifest/review
+    file, (b) it is fresh (<= 30 days since download), and (c) a wgc_check
+    evidence log exists in the ledger for this exact file sha256.
     """
-    from .wgc import (
-        REMINDER_CADENCE_DAYS,
-        _age_days,
-        _refresh_event,
-        inspect_wgc_file,
-        newest_wgc_xlsx,
-    )
+    from .wgc import MAX_AGE_DAYS, REMINDER_CADENCE_DAYS, newest_wgc_xlsx, run_wgc_check
 
     wgc_dir = ROOT / "data" / "manual" / "wgc"
-    cache_key = None
-    inspection = None
     try:
         newest = newest_wgc_xlsx(wgc_dir)
     except Exception:  # noqa: BLE001 - defensive; treated as waiting
@@ -762,25 +757,36 @@ def _wgc_status(connection) -> dict[str, Any]:
             "rows": None,
             "reconfirmed": False,
             "proof": None,
+            "tallies_with_review": None,
             "detail": "no XLSX in data/manual/wgc/",
         }
 
     try:
         stat = newest.stat()
-        cache_key = (str(newest), stat.st_mtime, stat.st_size)
-        inspection = _WGC_CACHE.get(cache_key)
-        if inspection is None:
-            inspection = inspect_wgc_file(newest)
-            _WGC_CACHE[cache_key] = inspection
-            if len(_WGC_CACHE) > 4:
-                _WGC_CACHE.pop(next(iter(_WGC_CACHE)))
+        event_path = wgc_dir / "refresh_event.json"
+        event_mtime = event_path.stat().st_mtime if event_path.exists() else 0.0
+        cache_key = (str(newest), stat.st_mtime, stat.st_size, event_mtime)
+        report = _WGC_REPORT_CACHE.get(cache_key)
+        if report is None:
+            report = run_wgc_check(wgc_dir=wgc_dir, ledger_path=None)
+            _WGC_REPORT_CACHE.clear()
+            _WGC_REPORT_CACHE[cache_key] = report
     except Exception as exc:  # noqa: BLE001 - report, never crash the UI
-        inspection = {"parse_ok": False, "error": f"{type(exc).__name__}: {exc}", "path": str(newest)}
+        return {
+            "status": "fail",
+            "completed": False,
+            "file_name": str(newest),
+            "age_days": None,
+            "rows": None,
+            "reconfirmed": False,
+            "proof": None,
+            "tallies_with_review": None,
+            "detail": f"{type(exc).__name__}: {exc}",
+        }
 
-    event = _refresh_event(wgc_dir)
-    age = _age_days(event.get("last_refresh_utc")) if event else None
-    if age is None:
-        age = _age_days(inspection.get("mtime"))
+    inspection = _json_dict(report.get("inspection"))
+    current_sha = str(inspection.get("sha256") or "").lower()
+    age = report.get("age_days")
     fresh = age is not None and age <= REMINDER_CADENCE_DAYS
 
     proof = None
@@ -793,24 +799,24 @@ def _wgc_status(connection) -> dict[str, Any]:
         )
         if error is None and row:
             payload = _json_dict(row.get("payload_json"))
-            status = str(payload.get("status") or "")
-            payload_inspection = _json_dict(payload.get("inspection"))
-            logged_sha = str(payload_inspection.get("sha256") or "").lower()
-            current_sha = str(inspection.get("sha256") or "").lower()
-            if status == "pass" and logged_sha and logged_sha == current_sha:
-                reconfirmed = True
-                proof = row.get("logged_at_utc")
+            if str(payload.get("status") or "") == "pass":
+                payload_inspection = _json_dict(payload.get("inspection"))
+                logged_sha = str(payload_inspection.get("sha256") or "").lower()
+                if logged_sha and logged_sha == current_sha:
+                    reconfirmed = True
+                    proof = row.get("logged_at_utc")
     except Exception:  # noqa: BLE001 - evidence is best-effort here; files stay authoritative
         reconfirmed = False
 
-    parse_ok = bool(inspection.get("parse_ok"))
-    status = "fail" if not parse_ok else ("pass" if fresh else "stale")
-    completed = parse_ok and fresh and reconfirmed
+    status = str(report.get("status") or "fail")
+    completed = status == "pass" and fresh and reconfirmed
 
     return {
         "status": status,
         "completed": completed,
         "file_name": newest.name,
+        "review_file": report.get("review_file"),
+        "tallies_with_review": report.get("tallies_with_review"),
         "latest_date": inspection.get("latest_date"),
         "age_days": age,
         "rows": inspection.get("rows"),
@@ -818,11 +824,8 @@ def _wgc_status(connection) -> dict[str, Any]:
         "reconfirmed": reconfirmed,
         "fresh": fresh,
         "proof": proof,
-        "detail": inspection.get("error") if not parse_ok else None,
+        "detail": report.get("detail"),
     }
-
-
-_WGC_CACHE: dict[tuple[str, float, int], dict[str, Any]] = {}
 
 
 def _ledger_proofs(connection) -> dict[str, Any]:
@@ -935,9 +938,17 @@ def _build_notifications(state: dict[str, Any]) -> list[dict[str, Any]]:
             f"File {wgc_file} is {wgc_age} days old (monthly cadence). "
             "Download the new WGC/IMF file, place it in data/manual/wgc/, then Reconfirm."
         )
-    else:  # present + fresh + parseable but not yet reconfirmed for this exact file
+    elif wgc_status == "review":
         wgc_note = (
-            f"File {wgc_file} parses ({wgc.get('rows')} rows, {wgc_age}d since download) "
+            f"Newest file {wgc_file} does NOT tally with the manifest/review file "
+            f"({wgc.get('review_file')}). Align the filename (or have the owner update the manifest), "
+            "then Reconfirm — the M1 review evidence must reference the same file."
+        )
+    else:  # present + fresh + parseable but not yet reconfirmed for this exact file
+        tally = wgc.get("tallies_with_review")
+        tally_text = "tallies with the review file" if tally else "NOT tallied with the review file"
+        wgc_note = (
+            f"File {wgc_file} parses ({wgc.get('rows')} rows, {wgc_age}d since download, {tally_text}) "
             "but has not been reconfirmed yet. Hit Reconfirm to verify and log it."
         )
     notifications.append(
