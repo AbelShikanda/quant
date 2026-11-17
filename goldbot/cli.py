@@ -757,6 +757,32 @@ def _cmd_refresh_macro(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def _cmd_wgc_check(args: argparse.Namespace) -> int:
+    """Reconfirm the monthly WGC/IMF XLSX (mechanical checks only; records evidence)."""
+    from .wgc import run_wgc_check
+
+    try:
+        report = run_wgc_check(wgc_dir=args.wgc_dir, ledger_path=args.ledger)
+    except Exception as exc:  # noqa: BLE001 - surface, don't crash
+        print(f"wgc-check failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json_output:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    else:
+        print(f"WGC reconfirm: {report['status']}")
+        print(f"  file: {report.get('file')}")
+        if report.get("inspection"):
+            insp = report["inspection"]
+            print(f"  rows={insp.get('rows')} sheets={insp.get('sheets')} sha256={(insp.get('sha256') or '')[:16]}")
+        if report.get("age_days") is not None:
+            print(f"  age: {report['age_days']} days")
+        if report.get("ledger_warning"):
+            print(f"  warning: {report['ledger_warning']}")
+        print(f"  {report.get('detail')}")
+    return 0 if report["status"] == "pass" else 1
+
+
 def _cmd_reconcile(args: argparse.Namespace) -> int:
     """Compare the ledger against the MT5 broker. Read-only; never sends orders."""
     from .reconcile import run_reconcile
@@ -1297,6 +1323,15 @@ def build_parser() -> argparse.ArgumentParser:
     recon_drill.add_argument("--broker-utc-offset-minutes", type=int, default=120)
     recon_drill.add_argument("--json-output", action="store_true")
     recon_drill.set_defaults(func=_cmd_reconnect_drill)
+
+    wgc_check = subparsers.add_parser(
+        "wgc-check",
+        help="reconfirm the manual WGC/IMF XLSX (mechanical checks; logs evidence to the ledger)",
+    )
+    wgc_check.add_argument("--wgc-dir", default="data/manual/wgc")
+    wgc_check.add_argument("--ledger", default=None, help="execution ledger for evidence logs (best-effort)")
+    wgc_check.add_argument("--json-output", action="store_true")
+    wgc_check.set_defaults(func=_cmd_wgc_check)
 
     recon = subparsers.add_parser(
         "reconcile",

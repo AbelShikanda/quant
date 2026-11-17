@@ -390,6 +390,7 @@ def load_state(
             counts[table] = count
             _add_error(errors, error)
         proofs = _ledger_proofs(connection)
+        proofs["wgc"] = _wgc_status(connection)
     finally:
         connection.close()
     proofs["macro"] = _macro_freshness()
@@ -728,6 +729,102 @@ def _macro_freshness() -> dict[str, Any]:
     }
 
 
+def _wgc_status(connection) -> dict[str, Any]:
+    """Monthly WGC/IMF manual XLSX status: newest file + mechanical checks + ledger proof.
+
+    ``completed`` is true only when (a) the newest XLSX parses, (b) it is fresh
+    (<= 30 days since last download), and (c) a wgc_check evidence log exists
+    in the ledger for this exact file sha256. The owner drops the file in,
+    hits Reconfirm, and the bell clears — until the next file lands.
+    """
+    from .wgc import (
+        REMINDER_CADENCE_DAYS,
+        _age_days,
+        _refresh_event,
+        inspect_wgc_file,
+        newest_wgc_xlsx,
+    )
+
+    wgc_dir = ROOT / "data" / "manual" / "wgc"
+    cache_key = None
+    inspection = None
+    try:
+        newest = newest_wgc_xlsx(wgc_dir)
+    except Exception:  # noqa: BLE001 - defensive; treated as waiting
+        newest = None
+
+    if newest is None:
+        return {
+            "status": "waiting",
+            "completed": False,
+            "file_name": None,
+            "age_days": None,
+            "rows": None,
+            "reconfirmed": False,
+            "proof": None,
+            "detail": "no XLSX in data/manual/wgc/",
+        }
+
+    try:
+        stat = newest.stat()
+        cache_key = (str(newest), stat.st_mtime, stat.st_size)
+        inspection = _WGC_CACHE.get(cache_key)
+        if inspection is None:
+            inspection = inspect_wgc_file(newest)
+            _WGC_CACHE[cache_key] = inspection
+            if len(_WGC_CACHE) > 4:
+                _WGC_CACHE.pop(next(iter(_WGC_CACHE)))
+    except Exception as exc:  # noqa: BLE001 - report, never crash the UI
+        inspection = {"parse_ok": False, "error": f"{type(exc).__name__}: {exc}", "path": str(newest)}
+
+    event = _refresh_event(wgc_dir)
+    age = _age_days(event.get("last_refresh_utc")) if event else None
+    if age is None:
+        age = _age_days(inspection.get("mtime"))
+    fresh = age is not None and age <= REMINDER_CADENCE_DAYS
+
+    proof = None
+    reconfirmed = False
+    try:
+        row, error = _one(
+            connection,
+            "SELECT logged_at_utc, payload_json FROM logs "
+            "WHERE component='wgc_check' ORDER BY logged_at_utc DESC LIMIT 1",
+        )
+        if error is None and row:
+            payload = _json_dict(row.get("payload_json"))
+            status = str(payload.get("status") or "")
+            payload_inspection = _json_dict(payload.get("inspection"))
+            logged_sha = str(payload_inspection.get("sha256") or "").lower()
+            current_sha = str(inspection.get("sha256") or "").lower()
+            if status == "pass" and logged_sha and logged_sha == current_sha:
+                reconfirmed = True
+                proof = row.get("logged_at_utc")
+    except Exception:  # noqa: BLE001 - evidence is best-effort here; files stay authoritative
+        reconfirmed = False
+
+    parse_ok = bool(inspection.get("parse_ok"))
+    status = "fail" if not parse_ok else ("pass" if fresh else "stale")
+    completed = parse_ok and fresh and reconfirmed
+
+    return {
+        "status": status,
+        "completed": completed,
+        "file_name": newest.name,
+        "latest_date": inspection.get("latest_date"),
+        "age_days": age,
+        "rows": inspection.get("rows"),
+        "sheet": inspection.get("sheet"),
+        "reconfirmed": reconfirmed,
+        "fresh": fresh,
+        "proof": proof,
+        "detail": inspection.get("error") if not parse_ok else None,
+    }
+
+
+_WGC_CACHE: dict[tuple[str, float, int], dict[str, Any]] = {}
+
+
 def _ledger_proofs(connection) -> dict[str, Any]:
     """Completion proofs for manual/promotion items, read from the ledger."""
     proofs: dict[str, Any] = {
@@ -811,18 +908,49 @@ def _build_notifications(state: dict[str, Any]) -> list[dict[str, Any]]:
         }
     )
 
-    # --- WGC central-bank gold (human download; never auto-clears) --------
+    # --- WGC central-bank gold (monthly human download; proven via file + ledger) ---
+    wgc = proofs.get("wgc") or {}
+    wgc_completed = bool(wgc.get("completed"))
+    wgc_status = wgc.get("status", "waiting")
+    wgc_age = wgc.get("age_days")
+    wgc_file = wgc.get("file_name")
+    if wgc_completed:
+        wgc_note = (
+            f"Reconfirmed from the newest file: {wgc_file} "
+            f"({wgc.get('rows')} rows, {wgc_age}d since download, sha verified, evidence logged). "
+            "Clears until a new file lands."
+        )
+    elif wgc_status == "waiting":
+        wgc_note = (
+            "No XLSX found in data/manual/wgc/. Download the monthly WGC/IMF file (link below), "
+            "place it there, then hit Reconfirm."
+        )
+    elif wgc_status == "fail":
+        wgc_note = (
+            f"WGC file present but failed checks: {wgc.get('detail') or 'parse error'}. "
+            "Replace the file, then Reconfirm."
+        )
+    elif wgc_status == "stale":
+        wgc_note = (
+            f"File {wgc_file} is {wgc_age} days old (monthly cadence). "
+            "Download the new WGC/IMF file, place it in data/manual/wgc/, then Reconfirm."
+        )
+    else:  # present + fresh + parseable but not yet reconfirmed for this exact file
+        wgc_note = (
+            f"File {wgc_file} parses ({wgc.get('rows')} rows, {wgc_age}d since download) "
+            "but has not been reconfirmed yet. Hit Reconfirm to verify and log it."
+        )
     notifications.append(
         {
             "id": "wgc_central_bank_manual",
-            "severity": "info",
-            "title": "Central-bank gold file (WGC / IMF)",
-            "note": "Diagnostic only; weight = 0.00. Not consumed by the overseer. Save as data/manual/wgc/world_official_gold_holdings.xlsx. Do not commit it. Refreshed monthly by the human owner.",
-            "action": "link",
+            "severity": "info" if wgc_completed else "warning",
+            "title": "WGC central-bank file reconfirmed" if wgc_completed else "Central-bank gold file (WGC / IMF) — monthly check",
+            "note": wgc_note,
+            "action": "reconfirm",
             "link": WGC_XLSX_URL,
             "link_text": "Download the Excel file",
-            "completed": False,
-            "proof": None,
+            "completed": wgc_completed,
+            "proof": wgc.get("proof"),
         }
     )
 
@@ -1100,6 +1228,34 @@ def _refresh_macro_command() -> list[str]:
         str(ROOT / "data" / "raw" / "macro"),
         "--ledger",
         EXECUTION_LEDGER,
+    ]
+
+
+def _wgc_check_command() -> list[str]:
+    return _python_command() + [
+        "-m",
+        "goldbot.cli",
+        "wgc-check",
+        "--wgc-dir",
+        str(ROOT / "data" / "manual" / "wgc"),
+        "--ledger",
+        EXECUTION_LEDGER,
+    ]
+
+
+def _kill_switch_command(*, expected_login: int, broker_utc_offset_minutes: int) -> list[str]:
+    return _python_command() + [
+        "-m",
+        "goldbot.cli",
+        "kill-switch",
+        "--ledger",
+        EXECUTION_LEDGER,
+        "--expected-login",
+        str(expected_login),
+        "--confirm-flatten",
+        "FLATTEN AND HALT",
+        "--broker-utc-offset-minutes",
+        str(broker_utc_offset_minutes),
     ]
 
 
@@ -1381,6 +1537,82 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
                 return
             _append_log("INFO", f"decline logged: {reason}")
             _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True})
+            return
+
+        if path == "/api/wgc/reconfirm":
+            cmd = _wgc_check_command()
+            _append_log("INFO", "WGC reconfirm requested from dashboard")
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                )
+            except subprocess.TimeoutExpired:
+                _json_response(
+                    self,
+                    HTTPStatus.GATEWAY_TIMEOUT,
+                    {"v": 1, "ok": False, "error": "wgc-check timed out"},
+                )
+                return
+            output = ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
+            for line in output.splitlines():
+                _append_log("INFO", f"[wgc-check] {line}")
+            ok = proc.returncode == 0
+            _json_response(
+                self,
+                HTTPStatus.OK if ok else HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "v": 1,
+                    "ok": ok,
+                    "exit_code": proc.returncode,
+                    "output": output.splitlines()[-20:],
+                },
+            )
+            return
+
+        if path == "/api/agent/kill-switch":
+            phrase = str(payload.get("confirm") or "")
+            if phrase != "FLATTEN AND HALT":
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"v": 1, "ok": False, "error": "confirm must be FLATTEN AND HALT"})
+                return
+            cmd = _kill_switch_command(
+                expected_login=self.server.expected_login,
+                broker_utc_offset_minutes=self.server.broker_utc_offset_minutes,
+            )
+            _append_log("CRITICAL", f"kill switch requested from dashboard: {' '.join(cmd)}")
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                )
+            except subprocess.TimeoutExpired:
+                _append_log("ERROR", "kill switch timed out after 90s")
+                _json_response(self, HTTPStatus.GATEWAY_TIMEOUT, {"v": 1, "ok": False, "error": "kill switch timed out"})
+                return
+            stdout = proc.stdout or ""
+            stderr = proc.stderr or ""
+            for line in stdout.splitlines():
+                _append_log("CRITICAL", f"[kill-switch] {line}")
+            for line in stderr.splitlines():
+                _append_log("ERROR", f"[kill-switch] {line}")
+            ok = proc.returncode == 0
+            _json_response(
+                self,
+                HTTPStatus.OK if ok else HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "v": 1,
+                    "ok": ok,
+                    "exit_code": proc.returncode,
+                    "stdout_tail": stdout.splitlines()[-20:],
+                    "stderr_tail": stderr.splitlines()[-20:],
+                },
+            )
             return
 
         if path == "/api/refresh-macro":

@@ -149,46 +149,47 @@ function renderNotifications(items) {
   var summary = byId('bellSummary');
   var bell = byId('bellBtn');
   items = items || [];
-  var pending = 0;
+  // Only items that need consistent reconciliation are shown; anything
+  // proven complete disappears from the bell.
+  var pending = [];
   var i;
   for (i = 0; i < items.length; i += 1) {
-    if (!items[i].completed) { pending += 1; }
+    if (!items[i].completed) { pending.push(items[i]); }
   }
   if (badge) {
-    badge.textContent = String(pending);
-    badge.style.display = pending ? 'inline-flex' : 'none';
+    badge.textContent = String(pending.length);
+    badge.style.display = pending.length ? 'inline-flex' : 'none';
   }
   if (bell) {
-    bell.className = pending ? 'bell-btn bell-alert' : 'bell-btn bell-clear';
-    bell.setAttribute('aria-label', 'Notifications, ' + pending + ' pending');
+    bell.className = pending.length ? 'bell-btn bell-alert' : 'bell-btn bell-clear';
+    bell.setAttribute('aria-label', 'Notifications, ' + pending.length + ' pending');
   }
   if (summary) {
-    summary.textContent = pending ? (String(pending) + ' pending') : 'all clear';
+    summary.textContent = pending.length ? (String(pending.length) + ' pending') : 'all clear';
   }
   if (!list) { return; }
-  if (!items.length) {
+  if (!pending.length) {
     list.innerHTML = '<li class="muted notify-empty">All clear.</li>';
     return;
   }
   var html = '';
-  for (i = 0; i < items.length; i += 1) {
-    var item = items[i];
-    var done = !!item.completed;
-    var action = '';
-    if (item.action === 'refresh') {
-      action = '<button class="notify-action refresh-btn" data-id="' + escapeHtml(item.id || '') + '" type="button"' + (done ? ' disabled' : '') + '>Refresh data</button>';
-    } else if (item.action === 'link' && item.link) {
-      action = '<a href="' + escapeHtml(item.link) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(item.link_text || 'Open') + '</a>';
+  for (i = 0; i < pending.length; i += 1) {
+    var item = pending[i];
+    var actions = '';
+    if (item.link) {
+      actions += '<a href="' + escapeHtml(item.link) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(item.link_text || 'Open') + '</a>';
     }
-    var check = done
-      ? '<span class="notify-check" title="' + escapeHtml(item.proof || 'verified') + '">✓</span>'
-      : '';
-    html += '<li class="notify ' + escapeHtml(item.severity || 'info') + (done ? ' done' : '') + '">'
+    if (item.action === 'refresh') {
+      actions += '<button class="notify-action refresh-btn" data-id="' + escapeHtml(item.id || '') + '" type="button">Refresh data</button>';
+    } else if (item.action === 'reconfirm') {
+      actions += '<button class="notify-action reconfirm-btn" data-id="' + escapeHtml(item.id || '') + '" type="button">Reconfirm</button>';
+    }
+    html += '<li class="notify ' + escapeHtml(item.severity || 'info') + '">'
       + '<div class="notify-body">'
-      + '<div class="notify-title-row"><strong>' + escapeHtml(item.title || '') + '</strong>' + check + '</div>'
+      + '<div class="notify-title-row"><strong>' + escapeHtml(item.title || '') + '</strong></div>'
       + (item.note ? '<p>' + escapeHtml(item.note) + '</p>' : '')
       + '</div>'
-      + (action ? '<div class="notify-actions">' + action + '</div>' : '')
+      + (actions ? '<div class="notify-actions">' + actions + '</div>' : '')
       + '</li>';
   }
   list.innerHTML = html;
@@ -219,18 +220,25 @@ function renderNotifications(items) {
   if (list) {
     list.addEventListener('click', function (ev) {
       var target = ev.target || ev.srcElement;
-      if (!target || !target.className || String(target.className).indexOf('refresh-btn') === -1) { return; }
+      var className = target && target.className ? String(target.className) : '';
+      var refresh = className.indexOf('refresh-btn') !== -1;
+      var reconfirm = className.indexOf('reconfirm-btn') !== -1;
+      if (!refresh && !reconfirm) { return; }
       target.disabled = true;
       var label = target.textContent;
-      target.textContent = 'Refreshing...';
-      postJson('/api/refresh-macro', {}, function (err, result) {
+      target.textContent = refresh ? 'Refreshing...' : 'Reconfirming...';
+      var endpoint = refresh ? '/api/refresh-macro' : '/api/wgc/reconfirm';
+      postJson(endpoint, {}, function (err, result) {
         if (err) {
           target.disabled = false;
           target.textContent = label;
-          toast('Macro refresh failed: ' + err.message);
+          toast((refresh ? 'Macro refresh failed: ' : 'WGC reconfirm failed: ') + err.message);
           return;
         }
-        toast(result && result.ok ? 'Macro refresh completed.' : 'Macro refresh finished with errors.');
+        toast(
+          (refresh ? 'Macro refresh' : 'WGC reconfirm')
+          + (result && result.ok ? ' completed.' : ' finished with errors.')
+        );
       });
     });
   }
@@ -651,6 +659,29 @@ byId('confirmCloseTradeBtn').addEventListener('click', function () {
   });
 });
 byId('shutdownDashboardBtn').addEventListener('click', function () { byId('shutdownModal').showModal(); });
+byId('killSwitchBtn').addEventListener('click', function () {
+  byId('killSwitchPhraseInput').value = '';
+  byId('confirmKillSwitchBtn').disabled = true;
+  try { byId('killSwitchPhraseInput').focus(); } catch (e) {}
+  byId('killSwitchModal').showModal();
+});
+byId('closeKillSwitchModalBtn').addEventListener('click', function () { closeDialog('killSwitchModal'); });
+byId('cancelKillSwitchBtn').addEventListener('click', function () { closeDialog('killSwitchModal'); });
+byId('killSwitchPhraseInput').addEventListener('input', function (e) {
+  var target = e.target || e.srcElement;
+  byId('confirmKillSwitchBtn').disabled = String(target.value).replace(/^\s+|\s+$/g, '') !== 'FLATTEN AND HALT';
+});
+byId('confirmKillSwitchBtn').addEventListener('click', function () {
+  var phrase = String(byId('killSwitchPhraseInput').value).replace(/^\s+|\s+$/g, '');
+  if (phrase !== 'FLATTEN AND HALT') { alert('Phrase must be FLATTEN AND HALT'); return; }
+  setButtonState('confirmKillSwitchBtn', 'FLATTENING...', true);
+  postJson('/api/agent/kill-switch', { confirm: phrase }, function (err, result) {
+    setButtonState('confirmKillSwitchBtn', 'FLATTEN AND HALT', false);
+    closeDialog('killSwitchModal');
+    if (err) { alert(err.message); return; }
+    toast(result && result.ok ? 'Kill switch executed: positions flattened, bot halted.' : 'Kill switch failed; see terminal.');
+  });
+});
 byId('closeShutdownModalBtn').addEventListener('click', function () { closeDialog('shutdownModal'); });
 byId('cancelShutdownBtn').addEventListener('click', function () { closeDialog('shutdownModal'); });
 byId('confirmShutdownBtn').addEventListener('click', function () {
@@ -891,6 +922,9 @@ h1,h2,h3{margin:0;font-weight:700}
 .btn-primary:hover{box-shadow:0 0 12px rgba(34,211,238,.35)}
 .btn-danger{border-color:#7f1d1d;background:#450a0a;color:#fca5a5}
 .btn-danger:hover{box-shadow:0 0 12px rgba(239,68,68,.35)}
+.btn-kill-switch{border-color:#ef4444;background:#7f1d1d;color:#fee2e2;font-size:14px;font-weight:800;letter-spacing:.08em;box-shadow:0 0 14px rgba(239,68,68,.35)}
+.btn-kill-switch:hover:not(:disabled){background:#991b1b;border-color:#f87171;box-shadow:0 0 22px rgba(239,68,68,.5)}
+.btn-kill-switch:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
 .btn-execute{border-color:#713f12;background:#3f2a08;color:var(--gold);font-size:13px}
 .btn-execute:hover:not(:disabled){box-shadow:0 0 16px rgba(245,158,11,.45)}
 .btn-secondary{border-color:#1e293b;background:#0f172a}
@@ -948,6 +982,7 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
   <div class="controls">
     <button id="startAgentBtn" class="btn btn-primary" type="button">{'Running' if running else 'Start Agent'}</button>
     <button id="stopAgentBtn" class="btn btn-danger" type="button" {'disabled' if not running else ''}>Stop Agent</button>
+    <button id="killSwitchBtn" class="btn btn-kill-switch" type="button" title="EMERGENCY: flatten all XAUUSD demo positions and halt the bot">KILL SWITCH</button>
     <button id="shutdownDashboardBtn" class="btn btn-danger btn-shutdown" type="button">Shutdown Dashboard</button>
     <label class="override-toggle" id="overrideToggleLabel" title="TESTING ONLY: bypass macro/fusion gates and allow a bare 0.01-lot demo order">
       <input type="checkbox" id="overrideBlocksToggle" />
@@ -964,7 +999,7 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
           <span id="bellSummary" class="muted">—</span>
         </div>
         <ul id="notificationsList" class="notifications"></ul>
-        <div class="bell-dropdown-footer muted">Completion is proven (macro files / ledger evidence), never by clicking. The WGC item clears only with the owner&rsquo;s monthly download.</div>
+        <div class="bell-dropdown-footer muted">Proven (macro files / ledger / WGC file + ledger), never by clicking. WGC: weight 0, diagnostic, HUMAN_JUDGMENT — reconfirm the newest monthly file each month.</div>
       </div>
     </div>
   </div>
@@ -1157,9 +1192,20 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
   </div>
 </dialog>
 
+<dialog id="killSwitchModal" class="modal">
+  <div class="modal-content modal-narrow">
+    <div class="modal-header"><h2 class="danger-text">KILL SWITCH</h2><button class="icon-btn" id="closeKillSwitchModalBtn" type="button" aria-label="Close">×</button></div>
+    <div class="modal-body">
+      <p class="danger-text">This IMMEDIATELY closes EVERY open XAUUSD demo position at market, writes <code>kill-switch.halt</code> (the agent refuses to run again), and records a CRITICAL incident in the ledger. It does not flatten other instruments and cannot undo a bad fill. Demo account only.</p>
+      <label class="field"><span>Type FLATTEN AND HALT to authorize</span><input id="killSwitchPhraseInput" type="text" autocomplete="off" spellcheck="false" placeholder="FLATTEN AND HALT"></label>
+      <div class="modal-actions"><button class="btn btn-secondary" id="cancelKillSwitchBtn" type="button">Cancel</button><button class="btn btn-kill-switch" id="confirmKillSwitchBtn" type="button" disabled>FLATTEN AND HALT</button></div>
+    </div>
+  </div>
+</dialog>
+
 <div id="toast" class="toast"></div>
 
-<footer class="footer"><span>GOLD BOT · read-only dashboard + guarded executor · loopback only · no scope changes</span><span>Kill switch / risk exits are veto-immune and are never affected by this UI.</span></footer>
+<footer class="footer"><span>GOLD BOT · read-only dashboard + guarded executor · loopback only · no scope changes</span><span>Risk exits are veto-immune. The Kill Switch button flattens positions and halts the bot via the guarded CLI.</span></footer>
 
 <script>
 {_APP_JS}

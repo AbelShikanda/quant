@@ -112,7 +112,9 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [~] Headless MT5 order router with idempotency keys (guarded `demo-send` path has idempotency; no autonomous router yet — agent never sends)
 - [~] Pre-trade checks: scope, risk, margin, spread, session, symbol state (built into demo preflight; not yet shared with an autonomous router)
 - [~] Post-trade reconciliation against MT5 deals and positions (`goldbot reconcile` compares ledger vs broker positions, exit code non-zero on mismatch; verified MATCH on empty book; deals reconciliation still pending)
-- [ ] Kill switch drill: flatten and halt (`goldbot kill-switch` built: demo-only, exact phrase `FLATTEN AND HALT`, writes `kill-switch.halt` next to ledger, agent loop checks the flag and exits, incident recorded; guard refusal tested; real flatten drill pending)
+- [ ] Kill switch drill: flatten and halt (`goldbot kill-switch` built: demo-only, exact phrase `FLATTEN AND HALT`, writes `kill-switch.halt` next to ledger, agent loop checks the flag and exits, incident recorded; guard refusal tested)
+- [x] Kill-switch UI placement: the owner must be able to fire the kill switch from the dashboard (red button, phrase-confirmed modal, spawns the guarded CLI; endpoint never auto-fires)
+- [ ] Kill-switch flatten-under-position drill: open a 0.01 demo position, fire the real kill switch, verify all positions closed + halt armed + incident recorded, mark the checklist
 - [x] Kill switch guard-chain drill recorded (`goldbot kill-switch --drill`, 2026-11-17, demo account 106806652 verified; no orders sent; halt flag NOT armed; incident `kill_switch_drill` in ledger; promotion gate still wants a flatten drill under an open position)
 - [x] Reconnect drill recorded (`goldbot reconnect-drill`, 2026-11-17, verdict PASS; incident + event in ledger)
 - [ ] No-chart-assumption tests
@@ -143,6 +145,8 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [x] Accept & Execute + close path (with DEMO OVERRIDE for testing)
 - [x] Notifications panel with stale macro + WGC manual link
 - [x] Notification bell + dropdown, persisted until completed
+- [x] Notifications pruned to pending-only: only items needing consistent reconciliation are shown (macro freshness gate, WGC monthly, any pending drill/signoff); proven items disappear; "All clear" when empty
+- [x] WGC reconfirm flow: bell item (link + Reconfirm button) spawns `goldbot wgc-check` — picks the most recently downloaded XLSX, runs mechanical checks (parse, rows, sha256 vs refresh_event.json, age ≤ 90d), logs `wgc_check` evidence to the ledger; clears until the next monthly file lands; waiting/fail/stale/pass states verified
 - [ ] Inline refresh button for download-driven items (broad USD)
 - [ ] Failure independence from MT5 (dashboard keeps working if MT5 is down)
 - [ ] Authentication / remote access (not needed while loopback-only)
