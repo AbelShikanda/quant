@@ -172,7 +172,7 @@ Done correctly means: safe, gated, and evidence-oriented — not merely "the cod
 - [~] Always-on supervisor/health-check for MT5 connection and bot process (agent loop exists with stop file + halt flag; no heartbeat monitor yet)
 
 ### P1 — strong edge needed for an honest demo record
-- [ ] Freshness automation: re-download and re-validate stale FRED inputs autonomously
+- [~] Freshness automation: `goldbot refresh-macro` re-downloads FRED + existing ALFRED vintage files atomically and validates them before touching `data/raw/macro`; wired as a command the owner/agent can call (scheduler/Task Scheduler next step). As of 2026-11-17: DFII10/DTWEXBGS 11-13 (4d, fresh), T10YIE 11-16 (1d), ALFRED_DTWEXBGS 11-16 vintage (4d) — manifest stale limits untouched
 - [ ] Risk-correlation checks (e.g. correlated USD long/short vs gold positions)
 - [ ] Economic surprise factor (consensus vs actual)
 - [ ] Order-book/depth or spread-history proxy for fill probability at size
@@ -195,19 +195,20 @@ Order: 1 broker specs → 2 pre/post-trade checks → 3 idempotency/reconciliati
 - [~] **Step 2 — Pre- and post-trade checks.** Pre-trade checks live in the demo preflight (spread, stop distance, notional cap, risk %, symbol trade mode, offset confirmation). Post-trade: `goldbot reconcile` (positions, read-only, verified MATCH). Deals-level reconciliation still pending.
 - [x] **Step 3 — Idempotency.** Demo order path enforces `decision_id:ENTRY` idempotency keys; reconcile command detects ledger-only/broker-only positions.
 - [~] **Step 4 — Kill switch + reconnect drill.** Kill switch built and guarded (`goldbot kill-switch`, demo-only, phrase-guarded, halt flag consumed by agent loop, incident recorded); real flatten drill pending owner go-ahead. Reconnect drill not started.
+- [~] **Step 4c — Freshness automation (unblocked the demo).** `goldbot refresh-macro` (FRED + existing ALFRED vintages, atomic, validated) cleared the `broad_usd` gate on 2026-11-17; manifest staleness limits untouched; strategy still reports NO_TRADE on its own signal.
 - [ ] Step 5 — Controlled demo fills → measure slippage/latency.
 - [ ] Step 6 — Promotion gates 1–7 (standard_1k only).
 
 ## Dependencies / current gaps that block the demo
 
-- [x] Broad USD FRED broad index exists at `data/raw/macro/DTWEXBGS.csv` (2026-11-06) and is correctly flagged stale by the strategy.
-- [x] Fresh macro ingestion is built and wired.
-- [ ] FRED publishes next DTWEXBGS; bot will resume when the file refreshes.
+- [x] Broad USD FRED broad index exists at `data/raw/macro/DTWEXBGS.csv` and `data/raw/macro/ALFRED_DTWEXBGS.csv` (2026-11-13, 4 days old).
+- [x] Fresh macro ingestion is built and wired (`goldbot refresh-macro`).
+- [x] FRED published new prints; refresh verified — all weight-bearing macro inputs present and fresh (preflight `[PASS] macro_data` 2026-11-17).
 - [x] `micro_50` profile exists; high risk override; not promotion-eligible; not substitute for a micro-lot broker.
 - [x] M1 gate decision recorded; sign-off file exists.
-- [!] Fresh `broad_usd` missing; no live trades possible until next FRED print arrives.
+- [ ] (Resolved 2026-11-17) Fresh `broad_usd` gap — closed via refresh; ALFRED vintage was the binding file.
 - [!] No `standard_1k` demo run outside the booked crash-recovered tests yet.
-- [!] No demo trade has been taken with the strategy’s own signal (only manual override _testing_).
+- [!] No demo trade has been taken with the strategy's own signal (only manual override _testing_). As of 2026-11-17 the strategy reports NO_TRADE (score −0.585) — correctly no entry.
 - [!] Pilot gate, kill-switch, reconnect drills not performed in live MT5.
 - [!] OOS-after-costs not demonstrated on real fills.
 

@@ -688,6 +688,37 @@ def _cmd_walkforward(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_refresh_macro(args: argparse.Namespace) -> int:
+    """Download FRED macro inputs via the free public endpoint; report staleness."""
+    from .refresh import refresh_macro, stale_limits
+    from .manifest import load_manifest
+
+    try:
+        result = refresh_macro(manifest_path=args.manifest, macro_dir=args.macro_dir)
+        manifest = load_manifest(args.manifest)
+        limits = stale_limits(manifest)
+    except Exception as exc:  # noqa: BLE001 - surface the blocker, don't crash
+        print(f"refresh-macro failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    payload = json.dumps(result.to_dict(), indent=2, ensure_ascii=False, default=str)
+    if args.json_output:
+        print(payload)
+    else:
+        print(f"macro refresh {'OK' if result.ok else 'FAILED'} -> {result.macro_dir}")
+        for series in result.series:
+            age = series.get("age_days")
+            age_text = f"{age}d old" if age is not None else "unknown age"
+            print(
+                f"  {series['series_id']:9s} {series['status']:6s} "
+                f"latest={series.get('latest_date')} ({age_text}) "
+                f"rows={series.get('rows')} changed={series.get('changed')} {series.get('errors') or ''}"
+            )
+        print(f"  enforced stale_after_days (manifest, unchanged): {limits}")
+        print("  NOTE: this command never widens staleness limits and never edits the manifest.")
+    return 0 if result.ok else 1
+
+
 def _cmd_reconcile(args: argparse.Namespace) -> int:
     """Compare the ledger against the MT5 broker. Read-only; never sends orders."""
     from .reconcile import run_reconcile
@@ -1192,6 +1223,15 @@ def build_parser() -> argparse.ArgumentParser:
     close_pos.add_argument("--report", help="write full JSON report")
     close_pos.add_argument("--json", action="store_true", help="print summary JSON")
     close_pos.set_defaults(func=_cmd_close_position)
+
+    refresh_macro_cmd = subparsers.add_parser(
+        "refresh-macro",
+        help="re-download FRED macro CSVs (free public endpoint) and report staleness; never edits the manifest",
+    )
+    refresh_macro_cmd.add_argument("--manifest", default="config/scope.gold.v1.yaml")
+    refresh_macro_cmd.add_argument("--macro-dir", default="data/raw/macro")
+    refresh_macro_cmd.add_argument("--json-output", action="store_true")
+    refresh_macro_cmd.set_defaults(func=_cmd_refresh_macro)
 
     recon = subparsers.add_parser(
         "reconcile",
