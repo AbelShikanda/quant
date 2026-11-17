@@ -465,6 +465,15 @@ function renderExecQuality(s) {
   }
 
   setText('eqExits', String(q.exits == null ? 0 : q.exits), q.exits && q.exits > 0 ? 'ok' : 'muted');
+
+  var h4pct = q.h4_trend_pct;
+  var h4dir = q.h4_trend;
+  var h4Text = h4pct == null ? 'n/a' : ((h4dir === 'up' ? '+' : '') + Number(h4pct).toFixed(2) + '%');
+  setText('eqH4Regime', h4Text, h4pct == null ? 'muted' : (h4dir === 'up' ? 'ok' : 'warn'));
+
+  var acct = q.account_summary || {};
+  setText('eqDemoTrades', String(acct.closed_trades == null ? 0 : acct.closed_trades) + ' (' + String(acct.wins == null ? 0 : acct.wins) + 'W)', acct.closed_trades ? (acct.total_pnl >= 0 ? 'ok' : 'warn') : 'muted');
+  setText('eqDemoPnl', (acct.total_pnl == null ? 'n/a' : (acct.total_pnl >= 0 ? '+' : '') + Number(acct.total_pnl).toFixed(2)), acct.total_pnl == null ? 'muted' : (acct.total_pnl >= 0 ? 'ok' : 'warn'));
 }
 
 function renderLiveTrades(state) {
@@ -1414,6 +1423,12 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
         <li><span class="eq-label">Stop-stress @1.5x ATR</span><span class="eq-value" id="eqNewsStress">&mdash;</span></li>
         <li><span class="eq-label">Tick check @M15 opens</span><span class="eq-value" id="eqTick">&mdash;</span></li>
         <li><span class="eq-label">Exits recorded</span><span class="eq-value" id="eqExits">&mdash;</span></li>
+      </ul>
+      <h4 class="vitals-group">Ledger</h4>
+      <ul class="eq-list">
+        <li><span class="eq-label">H4 trend</span><span class="eq-value" id="eqH4Regime">&mdash;</span></li>
+        <li><span class="eq-label">Demo trades closed</span><span class="eq-value" id="eqDemoTrades">&mdash;</span></li>
+        <li><span class="eq-label">Demo P&amp;L</span><span class="eq-value" id="eqDemoPnl">&mdash;</span></li>
       </ul>
     </div>
   </aside>

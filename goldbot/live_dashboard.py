@@ -391,14 +391,11 @@ def load_state(
             _add_error(errors, error)
         proofs = _ledger_proofs(connection)
         proofs["wgc"] = _wgc_status(connection)
+        state["exec_quality"] = _exec_quality(connection)
     finally:
         connection.close()
     proofs["macro"] = _macro_freshness()
     state["proofs"] = proofs
-    try:
-        state["exec_quality"] = _exec_quality(connection)
-    except Exception:  # noqa: BLE001 - never crash the dashboard on extras
-        state["exec_quality"] = {}
 
     run_summary = _json_dict(latest_run.get("summary_json")) if latest_run else {}
     account_trade_mode = run_summary.get("account_trade_mode")
@@ -1273,6 +1270,54 @@ def _exec_quality(connection) -> dict[str, Any]:
         "exits": 0,
         "halt_flag": halt_path.exists(),
     }
+
+    try:
+        row = connection.execute(
+            """
+            SELECT payload_json FROM strategy_decisions
+            WHERE decision_type IN ('ENTER_LONG','NO_TRADE','HOLD')
+            ORDER BY as_of_utc DESC LIMIT 1
+            """
+        ).fetchone()
+        if row:
+            payload = json.loads(row[0] or "{}")
+            technical = payload.get("technical") or {}
+            indicators = (technical.get("indicators") if isinstance(technical, dict) else None) or {}
+            if isinstance(indicators, dict):
+                fast = indicators.get("h4_ema_fast")
+                slow = indicators.get("h4_ema_slow")
+                if fast is not None and slow is not None and slow:
+                    gap_pct = (float(fast) - float(slow)) / float(slow) * 100.0
+                    out["h4_fast"] = float(fast)
+                    out["h4_slow"] = float(slow)
+                    out["h4_trend_pct"] = round(gap_pct, 2)
+                    out["h4_trend"] = "up" if gap_pct >= 0 else "down"
+                regime = indicators.get("h4_regime")
+                if regime:
+                    out["h4_regime"] = regime
+    except Exception:  # noqa: BLE001
+        out["h4_fast"] = None
+        out["h4_slow"] = None
+        out["h4_trend_pct"] = None
+        out["h4_trend"] = None
+
+    try:
+        row = connection.execute(
+            "SELECT COUNT(*) AS n, SUM(CASE WHEN state='DEMO_CLOSED' THEN realized_pnl ELSE 0 END) FROM positions"
+        ).fetchone()
+        if row:
+            count = int(row[0] or 0)
+            total = float(row[1] or 0)
+            wins_row = connection.execute(
+                "SELECT COUNT(*) FROM positions WHERE state='DEMO_CLOSED' AND realized_pnl > 0"
+            ).fetchone()
+            out["account_summary"] = {
+                "closed_trades": count,
+                "total_pnl": round(total, 2),
+                "wins": int(wins_row[0] or 0) if wins_row else 0,
+            }
+    except Exception:  # noqa: BLE001
+        out["account_summary"] = None
 
     try:
         horizon = upcoming(now, 30)
