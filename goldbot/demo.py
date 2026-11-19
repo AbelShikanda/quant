@@ -1140,28 +1140,33 @@ def run_demo_order(
     broker_utc_offset_minutes: int,
     broker_offset_confirmed: bool,
     send: bool,
-    confirm_phrase: str | None,
+    confirm_phrase: str | None = None,
     bars: int = 1600,
     context_bars: int = 500,
     deviation_points: int = 20,
     magic: int = 20261114,
     feed: MT5DataFeed | None = None,
     override_blocks: bool = False,
+    authorization_mode: str = "phrase_required",
 ) -> DemoOrderResult:
     """Run preflight and, only with explicit guards, submit one demo order.
 
-    The order is never sent unless all of the following are true:
+    Requires either:
 
-    - ``send`` is true,
-    - ``confirm_phrase`` is exactly ``SEND DEMO ORDER``,
-    - the broker UTC offset has been human-confirmed,
-    - the expected demo login was supplied,
-    - every preflight item is ``PASS`` and the decision is ``ENTER_LONG``,
-    - no order with the same decision idempotency key is already recorded.
+    - ``authorization_mode="phrase_required"`` (default): ``send=True`` and
+      ``confirm_phrase == "SEND DEMO ORDER"`` — the standing-human-click route, or
+    - ``authorization_mode="standing"``: ``send=True`` with no phrase; the
+      caller (the agent, when run with ``--auto-execute``) is responsible for
+      recording the standing authorization in the ledger. Still guarded by:
+      demo account only, expected login match, broker UTC offset human-
+      confirmed, every preflight PASS, decision ENTER_LONG, no duplicate
+      idempotency key.
     """
+    if authorization_mode not in {"phrase_required", "standing"}:
+        raise ValueError(f"unknown authorization_mode: {authorization_mode}")
     if not send:
         raise ValueError("refusing to send: explicit send=True (--send) is required")
-    if confirm_phrase != "SEND DEMO ORDER":
+    if authorization_mode == "phrase_required" and confirm_phrase != "SEND DEMO ORDER":
         raise ValueError(
             "refusing to send: --confirm-order must be exactly 'SEND DEMO ORDER'"
         )

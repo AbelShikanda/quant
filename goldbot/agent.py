@@ -18,7 +18,7 @@ from typing import Any
 
 from .contracts import RiskState, StrategyDecision, ensure_utc, utc_now
 from .data import BarSeries, MT5DataFeed, load_macro_directory
-from .demo import _latest_closed_bar
+from .demo import _latest_closed_bar, run_demo_order
 from .econ_calendar import blackout_at
 from .ledger import Ledger
 from .manifest import as_dict, manifest_hash
@@ -126,9 +126,19 @@ def run_agent_loop(
     stop_file: str | Path | None = None,
     max_iterations: int | None = None,
     feed: MT5DataFeed | None = None,
+    auto_execute: bool = False,
 ) -> int:
-    """Run the guarded agent loop. Returns 0 on clean stop, 1 on error."""
-    _log(f"[agent] starting; expected_login={expected_login}")
+    """Run the guarded agent loop. Returns 0 on clean stop, 1 on error.
+
+    ``auto_execute=True`` means the owner has given standing consent: on every
+    closed bar the strategy decides, and when the decision is ``ENTER_LONG``
+    the exact same preflight that guards ``demo-send`` is run before any
+    order is submitted. The order is attempted exactly once per decision and
+    is skipped on any doubt. Every attempt is logged to the ledger.
+    """
+    _log(f"[agent] starting; expected_login={expected_login}; auto_execute={auto_execute}")
+    if auto_execute:
+        _log("[agent] AUTO EXECUTION mode armed (owner standing directive)")
     market = as_dict(manifest.get("market"))
     symbol_name = str(market.get("symbol", "XAUUSD"))
     execution_minutes = 15 if str(market.get("execution_bar", "M15")).upper() == "M15" else 60
@@ -299,6 +309,37 @@ def run_agent_loop(
                                 f"score={decision.combined_score:+.3f} "
                                 f"reasons={' | '.join(decision.reasons)}"
                             )
+                            if auto_execute and decision.decision_type == "ENTER_LONG":
+                                positions = active_feed.positions()
+                                if positions:
+                                    _log("[agent] AUTO EXECUTION skipped: open position exists")
+                                elif halt_path.exists():
+                                    _log("[agent] AUTO EXECUTION skipped: kill-switch halt flag appeared mid-loop")
+                                elif getattr(risk_state, "max_drawdown_halt", False) or getattr(risk_state, "daily_halt", False):
+                                    _log("[agent] AUTO EXECUTION skipped: risk state halted")
+                                else:
+                                    _log("[agent] AUTO EXECUTION: running guarded order send (standing)")
+                                    try:
+                                        auto_result = run_demo_order(
+                                            manifest=manifest,
+                                            macro_dir=macro_dir,
+                                            ledger_path=ledger_path,
+                                            expected_login=int(expected_login if expected_login is not None else account.get("login") or 0),
+                                            broker_utc_offset_minutes=broker_utc_offset_minutes,
+                                            broker_offset_confirmed=True,
+                                            send=True,
+                                            confirm_phrase=None,
+                                            authorization_mode="standing",
+                                        )
+                                        if auto_result.sent:
+                                            _log(f"[agent] AUTO EXECUTION placed order: {auto_result.send_result}")
+                                        else:
+                                            _log(
+                                                "[agent] AUTO EXECUTION not sent: "
+                                                f"{auto_result.send_result or auto_result.preflight.status}"
+                                            )
+                                    except Exception as exc:  # noqa: BLE001 - keep loop alive
+                                        _log(f"[agent] AUTO EXECUTION error: {type(exc).__name__}: {exc}")
                     except Exception as exc:  # noqa: BLE001 - keep the agent alive
                         _log(f"[agent] ERROR iteration {iteration}: {type(exc).__name__}: {exc}")
 

@@ -493,7 +493,7 @@ def _cmd_demo_send(args: argparse.Namespace) -> int:
 
 
 def _cmd_agent(args: argparse.Namespace) -> int:
-    """Run the guarded agent loop. Never sends orders."""
+    """Run the guarded agent loop."""
     try:
         manifest = _load_manifest_for_run(args)
         return run_agent_loop(
@@ -507,6 +507,7 @@ def _cmd_agent(args: argparse.Namespace) -> int:
             expected_login=args.expected_login,
             stop_file=args.stop_file,
             max_iterations=args.max_iterations,
+            auto_execute=bool(args.auto_execute),
         )
     except Exception as exc:  # noqa: BLE001 - CLI must report, not crash
         print(f"agent failed: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -1729,6 +1730,7 @@ def build_parser() -> argparse.ArgumentParser:
     agent_cmd.add_argument("--context-bars", type=int, default=500, help="H4 bars to load")
     agent_cmd.add_argument("--interval-seconds", type=float, default=15.0, help="seconds between agent evaluations")
     agent_cmd.add_argument("--expected-login", type=int, required=True, help="required demo account login")
+    agent_cmd.add_argument("--auto-execute", action="store_true", help="standing authorization: attempt a guarded order on every ENTER_LONG; demo-only, kill-switch still wins")
     agent_cmd.add_argument("--stop-file", help="agent exits when this file exists")
     agent_cmd.add_argument("--max-iterations", type=int, help="stop after N iterations (testing)")
     agent_cmd.set_defaults(func=_cmd_agent)
