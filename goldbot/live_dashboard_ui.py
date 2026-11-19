@@ -518,10 +518,10 @@ function renderExecAnatomy(s) {
     var combined = fusion.combined_score == null ? 0 : fusion.combined_score;
     var magnitude = Math.min(1, Math.abs(combined));
     var duration = Math.max(8, Math.round(26 - magnitude * 18));
-    wrap = wrap || byId('managerOrbWrap');
-    if (wrap) {
-      wrap.style.setProperty('--orb-spin-duration', duration + 's');
-      wrap.style.setProperty('--orb-spin-dir', combined >= 0 ? 'normal' : 'reverse');
+    var orbWrap = byId('managerOrbWrap');
+    if (orbWrap) {
+      orbWrap.style.setProperty('--orb-spin-duration', duration + 's');
+      orbWrap.style.setProperty('--orb-spin-dir', combined >= 0 ? 'normal' : 'reverse');
     }
   }
 
