@@ -667,6 +667,8 @@ function renderMission(s) {
   var list = byId('missionGateList');
   var nextEl = byId('missionNext');
   var complete = byId('missionComplete');
+  var overallPct = byId('missionOverall');
+  var overallFill = byId('missionOverallFill');
   if (!list || !stage || !summary) { return; }
 
   stage.textContent = mission.stage_label || 'DEMO VALIDATION';
@@ -675,6 +677,7 @@ function renderMission(s) {
     summary.textContent = '7 promotion gates — passed (paper records). Live still requires your sign-off per gate.';
     stage.className = 'mission-stage-badge mission-stage-live';
     complete.style.color = '#4ade80';
+    if (overallPct) { overallPct.textContent = '100%'; }
   } else {
     summary.textContent = '7 promotion gates — demo must earn each one before any live capital is touched.';
     stage.className = 'mission-stage-badge';
@@ -682,19 +685,24 @@ function renderMission(s) {
   }
 
   var gates = mission.gates || [];
+  var totalProgress = 0;
   var html = '';
   for (var i = 0; i < gates.length; i += 1) {
     var g = gates[i];
     var status = String(g.status || 'not_started').replace(/[^a-z_]/g, '_');
     var pct = Math.max(0, Math.min(100, Number(g.progress || 0)));
+    totalProgress += pct;
     var summaryLine = String(g.summary || g.detail || '');
     var rows = g.detail_rows || [];
     var metricsHtml = '';
     for (var d = 0; d < rows.length; d += 1) {
       metricsHtml += '<div><dt>' + escapeHtml(rows[d].label) + '</dt><dd>' + escapeHtml(rows[d].value) + '</dd></div>';
     }
-    html += '<li class="gate state-' + status + '" data-gate="' + escapeHtml(g.id || String(i)) + '">'
-      + '<button class="gate-head" type="button" aria-expanded="false" aria-controls="gate-detail-' + i + '">'
+    var key = String(g.id || i);
+    var isOpen = !!window._missionGateOpen && window._missionGateOpen[key] === true;
+    var gateCls = 'gate state-' + status + (isOpen ? ' open' : '');
+    html += '<li class="' + gateCls + '" data-gate="' + escapeHtml(key) + '">'
+      + '<button class="gate-head" type="button" aria-expanded="' + (isOpen ? 'true' : 'false') + '" aria-controls="gate-detail-' + i + '">'
       + '<span class="gate-head-left">'
       + '<span class="gate-num-n">#' + g.n + '</span>'
       + '<span class="gate-title-block">'
@@ -704,7 +712,7 @@ function renderMission(s) {
       + '<span class="gate-right">'
       + '<span class="gate-pct">' + pct + '%</span>'
       + '<span class="gate-status">' + escapeHtml(status.replace(/_/g, ' ')) + '</span>'
-      + '<span class="gate-caret">▾</span>'
+      + '<span class="gate-caret">&#x25BE;</span>'
       + '</span>'
       + '</button>'
       + '<div class="gate-bar"><span class="gate-bar-fill" style="width:' + pct + '%"></span></div>'
@@ -715,25 +723,45 @@ function renderMission(s) {
   }
   list.innerHTML = html;
 
-  // Delegated toggle: click .gate-head toggles .open on the owning .gate.
+  var avg = gates.length ? Math.round(totalProgress / gates.length) : 0;
+  if (overallPct) { overallPct.textContent = avg + '%'; }
+  if (overallFill) { overallFill.style.width = avg + '%'; }
+
   list.onclick = function (ev) {
-    var target = ev.target;
-    while (target && target !== list) {
-      if (target.className && String(target.className).indexOf('gate-head') === 0) { break; }
-      target = target.parentNode;
+    var node = ev.target;
+    while (node && node !== list) {
+      if (node.className && String(node.className).indexOf('gate-head') === 0) { break; }
+      node = node.parentNode;
     }
-    if (!target || target === list) { return; }
-    var gate = target.parentNode;
-    if (!gate) { return; }
-    var expanded = gate.getAttribute('data-open') === 'true';
-    gate.setAttribute('data-open', expanded ? 'false' : 'true');
-    gate.className = expanded
-      ? gate.className.replace(/\bopen\b/g, '').trim()
-      : gate.className + ' open';
-    target.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+    if (!node || node === list) { return; }
+    var li = node.parentNode;
+    if (!li) { return; }
+    var key = String(li.getAttribute('data-gate') || li.getAttribute('data-index') || '');
+    if (!window._missionGateOpen) { window._missionGateOpen = {}; }
+    var opened = li.className.indexOf(' open') !== -1;
+    window._missionGateOpen[key] = !opened;
+    li.className = opened
+      ? li.className.replace(/\bopen\b/g, '').trim().replace(/\s+/g, ' ')
+      : li.className + ' open';
+    node.setAttribute('aria-expanded', opened ? 'false' : 'true');
   };
 
   nextEl.textContent = 'next: ' + (mission.critical_next || 'record M1 sign-off');
+}
+
+function wireMissionToggle() {
+  var panel = byId('missionPanel');
+  var toggle = byId('missionToggle');
+  if (!panel || !toggle) { return; }
+  toggle.addEventListener('click', function () {
+    var collapsed = panel.className.indexOf('mission-collapsed') !== -1;
+    if (collapsed) {
+      panel.className = panel.className.replace(' mission-collapsed', '');
+    } else {
+      panel.className = panel.className + ' mission-collapsed';
+    }
+    toggle.setAttribute('aria-expanded', collapsed ? 'true' : 'false');
+  });
 }
 
 function updateState(data) {
@@ -1208,6 +1236,7 @@ function fallbackPoll() {
     });
   }, REFRESH_MS);
 }
+wireMissionToggle();
 connectStream();
 """
 
@@ -1529,9 +1558,23 @@ h1,h2,h3{margin:0;font-weight:700}
 .vitals-title{margin:0;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);display:flex;justify-content:space-between;align-items:baseline}
 .vitals-live{color:#4ade80;font-size:9px;letter-spacing:.14em}
 .vitals-group{margin:2px 0 0;font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;border-bottom:1px solid var(--border);padding-bottom:4px}
-.mission-panel{padding:14px;margin-top:12px}
-.mission-header{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.mission-stage-badge{font-size:10px;font-weight:800;letter-spacing:.16em;padding:3px 10px;border-radius:6px;border:1px solid #b91c1c;color:#fca5a5;background:#450a0a}
+.mission-panel{padding:12px;margin-top:12px}
+.mission-collapsed .mission-body{display:none}
+.mission-collapsed .mission-overall-bar{display:none}
+.mission-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;background:transparent;border:none;color:inherit;text-align:left;cursor:pointer;padding:0}
+.mission-toggle:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}
+.mission-toggle-left{display:flex;flex-direction:column;gap:2px;min-width:0}
+.mission-toggle-title{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--text)}
+.mission-toggle-sub{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mission-toggle-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.mission-pct{font-size:11px;font-weight:800;letter-spacing:.06em;color:#fca5a5;min-width:36px;text-align:right}
+.mission-stage-badge{font-size:9px;font-weight:800;letter-spacing:.14em;padding:3px 10px;border-radius:6px;border:1px solid #b91c1c;color:#fca5a5;background:#450a0a;white-space:nowrap}
+.mission-stage-live{border-color:#166534;color:#4ade80;background:#052e1c}
+.mission-caret{transition:transform .18s ease;color:var(--muted)}
+.mission-collapsed .mission-caret{transform:rotate(-90deg)}
+.mission-overall-bar{height:6px;border-radius:99px;overflow:hidden;background:#1f2937;margin:10px 0 0}
+.mission-overall-fill{display:block;height:100%;width:0%;background:linear-gradient(90deg,#22d3ee,#a855f7,#fbbf24,#22c55e);transition:width .35s ease}
+.mission-panel:not(.mission-collapsed) .mission-caret{transform:rotate(0)}
 .gate-rows{list-style:none;display:flex;flex-direction:column;gap:6px;margin:10px 0 0;padding:0}
 .gate{display:flex;flex-direction:column;gap:4px;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface);transition:border-color .18s ease}
 .gate.open{border-color:#164e63;background:#07161f}
@@ -1952,14 +1995,23 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
   </div>
 </section>
 
-<section class="panel mission-panel" id="missionPanel">
-  <div class="mission-header">
-    <h2 class="panel-title">Mission — Demo to Live</h2>
-    <span id="missionStage" class="mission-stage-badge">DEMO</span>
+<section class="panel mission-panel mission-collapsed" id="missionPanel">
+  <button class="mission-toggle" id="missionToggle" type="button" aria-expanded="false" aria-controls="missionBody">
+    <span class="mission-toggle-left">
+      <span class="mission-toggle-title">Mission — Demo to Live</span>
+      <span class="mission-toggle-sub muted" id="missionSummary">7 promotion gates — demo must earn each one before any live capital is touched.</span>
+    </span>
+    <span class="mission-toggle-right">
+      <span class="mission-stage-badge" id="missionStage">DEMO</span>
+      <span class="mission-pct" id="missionOverall">0%</span>
+      <span class="gate-caret mission-caret" aria-hidden="true">&#x25BE;</span>
+    </span>
+  </button>
+  <div class="mission-overall-bar" id="missionOverallBar" aria-hidden="true"><span class="mission-overall-fill" id="missionOverallFill"></span></div>
+  <div class="mission-body" id="missionBody">
+    <ol class="gate-rows" id="missionGateList"></ol>
+    <div class="mission-footer"><span id="missionNext" class="muted">next: ...</span><span id="missionComplete" class="mission-complete">0/7</span></div>
   </div>
-  <p class="panel-subtitle" id="missionSummary">7 promotion gates — demo must pass each before any live capital is touched.</p>
-  <ol class="gate-rows" id="missionGateList"></ol>
-  <div class="mission-footer"><span id="missionNext" class="muted">next: ...</span><span id="missionComplete" class="mission-complete">0/7</span></div>
 </section>
 
 <section class="panel agent-steps" id="agentStepsPanel">
