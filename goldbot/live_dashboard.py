@@ -6,6 +6,11 @@ never executes strategy logic. It observes the SQLite ledger in read-only mode
 and can only spawn the guarded CLI processes (agent loop / demo order) as a
 remote controller. It remains a remote control; the bot remains the only
 ledger writer.
+
+The single write path is the Feedback section: a local-only issue tracker
+(separate SQLite file under data/feedback/, never the ledger) so the operator
+can file bugs/improvements and copy them out as Markdown tickets. It writes no
+trading state, no ledger rows, no scope, and nothing to MT5.
 """
 
 from __future__ import annotations
@@ -24,9 +29,11 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import yaml
+
+from goldbot import feedback as _feedback
 
 DEFAULT_LEDGER = Path("reports/demo.execution.ledger.sqlite")
 DEFAULT_HOST = "127.0.0.1"
@@ -40,7 +47,7 @@ DEFAULT_INTERVAL_SECONDS = 15.0
 STARTUP_LOG_LINES = 300
 PYTHON = "python"
 EXECUTION_LEDGER = "reports/demo.execution.ledger.sqlite"
-CSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
+CSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'"
 
 _AGENT_LOCK = threading.Lock()
 _AGENT_PROCESS: subprocess.Popen | None = None
@@ -625,7 +632,7 @@ def load_state(
 # ---------------------------------------------------------------------------
 # HTTP server and guarded agent control plane
 # ---------------------------------------------------------------------------
-from .live_dashboard_ui import render_page  # noqa: E402
+from .live_dashboard_ui import render_feedback_page, render_page  # noqa: E402
 from .profiles import load_profile  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1578,6 +1585,17 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
                 )
             return
 
+        if path == "/feedback":
+            try:
+                body = render_feedback_page().encode("utf-8")
+                self._send_html(body)
+            except Exception as exc:  # noqa: BLE001 - server must report, not crash
+                self._send_html(
+                    f"feedback error: {type(exc).__name__}: {exc}".encode("utf-8"),
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
+
         if path == "/api/state":
             _json_response(self, HTTPStatus.OK, {"v": 1, "state": self._state()})
             return
@@ -1586,12 +1604,61 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.OK, {"v": 1, "agent": _agent_status()})
             return
 
+        if path == "/api/feedback":
+            query = parse_qs(urlparse(self.path).query)
+            sort = (query.get("sort") or ["created"])[0]
+            descending = (query.get("descending") or ["1"])[0] not in ("0", "false", "no")
+            status = (query.get("status") or [""])[0] or None
+            item_type = (query.get("type") or [""])[0] or None
+            try:
+                items = _feedback.list_items(sort=sort, descending=descending, status=status, item_type=item_type)
+            except Exception as exc:  # noqa: BLE001 - report store failure, don't crash the dashboard
+                _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"v": 1, "ok": False, "error": f"feedback store error: {exc}"})
+                return
+            _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True, "items": items})
+            return
+
+        if path == "/api/feedback/markdown":
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                item_id = int((query.get("id") or ["0"])[0])
+            except ValueError:
+                item_id = 0
+            item = _feedback.get_item(item_id) if item_id else None
+            if item is None:
+                _json_response(self, HTTPStatus.NOT_FOUND, {"v": 1, "ok": False, "error": "feedback item not found"})
+                return
+            _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True, "markdown": _feedback.to_markdown(item)})
+            return
+
+        if path.startswith("/feedback/assets/"):
+            name = path[len("/feedback/assets/"):]
+            target = _feedback.asset_path(name)
+            if target is None:
+                self._send_text(b"not found", status=HTTPStatus.NOT_FOUND)
+                return
+            data = target.read_bytes()
+            content_type = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+            }.get(target.suffix.lower(), "application/octet-stream")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "max-age=3600")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         if path == "/api/stream":
             self._stream_state()
             return
 
         if path == "/health":
-            _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True, "read_only": True, "no_mt5_connection": True})
+            _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True, "read_only": True, "no_mt5_connection": True, "feedback_store": "local sqlite (separate from ledger)"})
             return
 
         if path == "/favicon.ico":
@@ -1874,6 +1941,59 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 {"v": 1, "ok": True, "profile": _profile_spec(self.server.profile)},
             )
+            return
+
+        if path == "/api/feedback/create":
+            try:
+                item = _feedback.create_item(payload)
+            except ValueError as exc:
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"v": 1, "ok": False, "error": str(exc)})
+                return
+            _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True, "item": item})
+            return
+
+        if path == "/api/feedback/update":
+            try:
+                item_id = int(payload.get("id"))
+            except (TypeError, ValueError):
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"v": 1, "ok": False, "error": "id must be an integer"})
+                return
+            try:
+                item = _feedback.update_item(item_id, payload)
+            except ValueError as exc:
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"v": 1, "ok": False, "error": str(exc)})
+                return
+            if item is None:
+                _json_response(self, HTTPStatus.NOT_FOUND, {"v": 1, "ok": False, "error": "feedback item not found"})
+                return
+            _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True, "item": item})
+            return
+
+        if path == "/api/feedback/delete":
+            try:
+                item_id = int(payload.get("id"))
+            except (TypeError, ValueError):
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"v": 1, "ok": False, "error": "id must be an integer"})
+                return
+            deleted = _feedback.delete_item(item_id)
+            _json_response(
+                self,
+                HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND,
+                {"v": 1, "ok": deleted, "deleted": deleted},
+            )
+            return
+
+        if path == "/api/feedback/screenshot":
+            try:
+                name = _feedback.save_screenshot(
+                    str(payload.get("filename") or "screenshot.png"),
+                    str(payload.get("data_base64") or ""),
+                    str(payload.get("mime") or ""),
+                )
+            except ValueError as exc:
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"v": 1, "ok": False, "error": str(exc)})
+                return
+            _json_response(self, HTTPStatus.OK, {"v": 1, "ok": True, "name": name, "url": f"/feedback/assets/{quote(name)}"})
             return
 
         if path == "/api/server/shutdown":

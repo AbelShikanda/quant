@@ -287,6 +287,22 @@ def test_render_page_is_agentic_and_has_agent_markup(tmp_path: Path) -> None:
     assert 'id="acceptBtn"' in page
     assert "<script" in page.lower()
     assert 'Accept &amp; Execute' in page
+    # feedback moved to its own page
+    assert 'id="feedbackSection"' not in page
+    assert 'href="/feedback"' in page
+
+
+def test_feedback_page_renders_form_and_list() -> None:
+    from goldbot.live_dashboard_ui import render_feedback_page
+
+    page = render_feedback_page()
+    assert "GOLD BOT" in page
+    assert 'id="feedbackSection"' in page
+    assert 'id="feedbackForm"' in page
+    assert 'id="feedbackList"' in page
+    assert "Copy as Markdown" in page
+    assert 'href="/"' in page
+    assert "<script" in page.lower()
 
 
 def test_http_server_serves_page_and_state(tmp_path: Path) -> None:
@@ -302,6 +318,11 @@ def test_http_server_serves_page_and_state(tmp_path: Path) -> None:
             assert response.status == 200
             assert "text/html" in response.headers["Content-Type"]
             assert "GOLD BOT" in page
+        with urllib.request.urlopen(base + "/feedback", timeout=5) as response:
+            feedback_page = response.read().decode("utf-8")
+            assert response.status == 200
+            assert "Feedback &amp; Issues" in feedback_page
+            assert 'id="feedbackForm"' in feedback_page
         with urllib.request.urlopen(base + "/api/state", timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
             assert response.status == 200
@@ -315,6 +336,7 @@ def test_http_server_serves_page_and_state(tmp_path: Path) -> None:
                 "ok": True,
                 "read_only": True,
                 "no_mt5_connection": True,
+                "feedback_store": "local sqlite (separate from ledger)",
             }
     finally:
         server.shutdown()

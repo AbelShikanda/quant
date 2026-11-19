@@ -32,14 +32,157 @@ def _card(node_id: str, title: str, subtitle: str, body: str, tone: str) -> str:
     )
 
 
-_APP_JS = r"""
-var REFRESH_MS = 2000;
+_JS_HELPERS = r"""
 var byId = function (id) { return document.getElementById(id); };
 var escapeHtml = function (v) {
   return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
     return ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[c];
   });
 };
+var toast = function (message) {
+  var el = byId('toast');
+  if (!el) { return; }
+  el.textContent = message;
+  el.className = 'toast show';
+  window.clearTimeout(el._timer);
+  el._timer = window.setTimeout(function () { el.className = 'toast'; }, 4000);
+};
+function postJson(path, body, callback) {
+  var req = new XMLHttpRequest();
+  req.open('POST', path, true);
+  req.setRequestHeader('Content-Type', 'application/json');
+  req.onreadystatechange = function () {
+    if (req.readyState !== 4) { return; }
+    var text = req.responseText || '{}';
+    if (req.status >= 200 && req.status < 300) {
+      try { callback(null, JSON.parse(text)); } catch (e) { callback(null, {}); }
+    } else {
+      var message = 'request failed';
+      try { var parsed = JSON.parse(text); message = parsed.error || message; } catch (e) {}
+      callback(new Error(message), null);
+    }
+  };
+  req.send(JSON.stringify(body || {}));
+}
+function getJson(path, callback) {
+  var req = new XMLHttpRequest();
+  req.open('GET', path, true);
+  req.onreadystatechange = function () {
+    if (req.readyState !== 4) { return; }
+    var text = req.responseText || '{}';
+    if (req.status >= 200 && req.status < 300) {
+      try { callback(null, JSON.parse(text)); } catch (e) { callback(null, {}); }
+    } else {
+      callback(new Error(req.statusText || 'request failed'), null);
+    }
+  };
+  req.send();
+}
+"""
+
+_FEEDBACK_BODY = """
+<section class="panel feedback-section" id="feedbackSection" aria-label="Feedback and issues">
+  <div class="feedback-head">
+    <div>
+      <h2 class="panel-title">Feedback &amp; Issues</h2>
+      <p class="panel-subtitle">Bugs, improvements, features, chores, questions. File it once, then copy it as Markdown and hand it to the agent.</p>
+    </div>
+    <div class="feedback-counts" id="feedbackCounts"><span class="muted">Loading…</span></div>
+  </div>
+  <div class="feedback-grid">
+    <form id="feedbackForm" class="feedback-form" autocomplete="off">
+      <div class="feedback-form-head">
+        <h3 class="feedback-form-title" id="feedbackFormTitle">File feedback</h3>
+        <button class="btn btn-ghost btn-small" id="feedbackCancelEditBtn" type="button" hidden>Cancel edit</button>
+      </div>
+      <input type="hidden" id="feedbackEditId" value="">
+      <div class="feedback-row-2">
+        <label class="field"><span>Type</span>
+          <select id="feedbackType">
+            <option value="bug">Bug</option>
+            <option value="improvement">Improvement</option>
+            <option value="feature">Feature request</option>
+            <option value="task">Task / chore</option>
+            <option value="question">Question</option>
+          </select>
+        </label>
+        <label class="field"><span>Severity</span>
+          <select id="feedbackSeverity">
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium" selected>Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </label>
+      </div>
+      <label class="field"><span>Title</span><input id="feedbackTitle" type="text" maxlength="300" placeholder="Short, specific summary" required></label>
+      <label class="field"><span>Description</span><textarea id="feedbackDescription" rows="3" placeholder="What's wrong / what should change, and why it matters"></textarea></label>
+      <label class="field"><span>Steps to reproduce</span><textarea id="feedbackSteps" rows="3" placeholder="1. …&#10;2. …&#10;3. …"></textarea></label>
+      <div class="feedback-row-2">
+        <label class="field"><span>Expected</span><textarea id="feedbackExpected" rows="2" placeholder="What should happen"></textarea></label>
+        <label class="field"><span>Actual</span><textarea id="feedbackActual" rows="2" placeholder="What happens instead"></textarea></label>
+      </div>
+      <label class="field"><span>Recommended fix / change</span><textarea id="feedbackRecommended" rows="2" placeholder="Your proposed fix, or leave blank if unsure"></textarea></label>
+      <div class="field">
+        <span>Screenshots</span>
+        <div class="feedback-dropzone" id="feedbackDropzone" tabindex="0" role="button" aria-label="Paste or drop screenshots here">
+          <p class="muted">Paste (Ctrl+V), drop, or</p>
+          <label class="btn btn-secondary btn-small feedback-browse">Browse files<input id="feedbackFileInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden></label>
+        </div>
+        <div class="feedback-attachments" id="feedbackAttachments"></div>
+      </div>
+      <div class="feedback-form-actions">
+        <button class="btn btn-primary" id="feedbackSubmitBtn" type="submit">Submit feedback</button>
+        <button class="btn btn-ghost" id="feedbackResetBtn" type="button">Clear</button>
+      </div>
+    </form>
+    <div class="feedback-list-wrap">
+      <div class="feedback-list-toolbar">
+        <h3 class="feedback-form-title">Submitted</h3>
+        <div class="feedback-list-controls">
+          <label class="field field-inline"><span>Sort</span>
+            <select id="feedbackSort">
+              <option value="created">Newest</option>
+              <option value="severity">Severity</option>
+              <option value="status">Status</option>
+              <option value="type">Type</option>
+              <option value="title">Title A–Z</option>
+              <option value="updated">Recently updated</option>
+            </select>
+          </label>
+          <button class="btn btn-ghost btn-small" id="feedbackSortDirBtn" type="button" title="Toggle sort direction">↓</button>
+          <label class="field field-inline"><span>Status</span>
+            <select id="feedbackStatusFilter">
+              <option value="">All</option>
+              <option value="new">New</option>
+              <option value="accepted">Triaged · Accepted (queued)</option>
+              <option value="needs_info">Needs information</option>
+              <option value="duplicate">Duplicate</option>
+              <option value="wont_fix">Won't fix</option>
+              <option value="not_a_bug">Not a bug</option>
+              <option value="done">Done</option>
+            </select>
+          </label>
+          <label class="field field-inline"><span>Type</span>
+            <select id="feedbackTypeFilter">
+              <option value="">All</option>
+              <option value="bug">Bug</option>
+              <option value="improvement">Improvement</option>
+              <option value="feature">Feature request</option>
+              <option value="task">Task / chore</option>
+              <option value="question">Question</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div id="feedbackList" class="feedback-list"><p class="muted">Loading…</p></div>
+    </div>
+  </div>
+</section>
+"""
+
+_APP_JS = _JS_HELPERS + r"""
+var REFRESH_MS = 2000;
 var fmtScore = function (v) {
   if (v == null) { return 'n/a'; }
   var n = Number(v);
@@ -55,15 +198,6 @@ var fmtNum = function (v, d) {
 var fmtTime = function (t) {
   try { return new Date(t).toISOString(); } catch (e) { return String(t); }
 };
-var toast = function (message) {
-  var el = byId('toast');
-  if (!el) { return; }
-  el.textContent = message;
-  el.className = 'toast show';
-  window.clearTimeout(el._timer);
-  el._timer = window.setTimeout(function () { el.className = 'toast'; }, 4000);
-};
-
 function setStep(id, state) {
   var el = byId(id);
   if (el) { el.className = 'step step-' + state; }
@@ -801,39 +935,6 @@ if (initialState && typeof updateState === 'function') {
   updateState({ v: 1, state: initialState });
 }
 
-function postJson(path, body, callback) {
-  var req = new XMLHttpRequest();
-  req.open('POST', path, true);
-  req.setRequestHeader('Content-Type', 'application/json');
-  req.onreadystatechange = function () {
-    if (req.readyState !== 4) { return; }
-    var text = req.responseText || '{}';
-    if (req.status >= 200 && req.status < 300) {
-      try { callback(null, JSON.parse(text)); } catch (e) { callback(null, {}); }
-    } else {
-      var message = 'request failed';
-      try { var parsed = JSON.parse(text); message = parsed.error || message; } catch (e) {}
-      callback(new Error(message), null);
-    }
-  };
-  req.send(JSON.stringify(body || {}));
-}
-
-function getJson(path, callback) {
-  var req = new XMLHttpRequest();
-  req.open('GET', path, true);
-  req.onreadystatechange = function () {
-    if (req.readyState !== 4) { return; }
-    var text = req.responseText || '{}';
-    if (req.status >= 200 && req.status < 300) {
-      try { callback(null, JSON.parse(text)); } catch (e) { callback(null, {}); }
-    } else {
-      callback(new Error(req.statusText || 'request failed'), null);
-    }
-  };
-  req.send();
-}
-
 function closeDialog(id) { byId(id).close(); }
 function setButtonState(id, label, disabled) {
   var el = byId(id);
@@ -1031,6 +1132,276 @@ function fallbackPoll() {
   }, REFRESH_MS);
 }
 connectStream();
+"""
+
+_FEEDBACK_JS = _JS_HELPERS + r"""
+// ---- Feedback section ----
+var feedbackState = { items: [], editingId: null, attachments: [], sort: 'created', desc: true, status: '', type: '' };
+var feedbackTypeLabels = { bug: 'Bug', improvement: 'Improvement', feature: 'Feature request', task: 'Task / chore', question: 'Question' };
+var feedbackSeverityLabels = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' };
+var feedbackStatusLabels = { new: 'New', accepted: 'Triaged · Accepted (queued)', needs_info: 'Needs information', duplicate: 'Duplicate', wont_fix: "Won't fix", not_a_bug: 'Not a bug', done: 'Done' };
+
+function feedbackText(id) { return (byId(id).value || '').trim(); }
+
+function copyTextFeedback(text, done) {
+  var fallback = function () {
+    var area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    document.body.appendChild(area);
+    area.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(area);
+    done(ok);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
+  } else {
+    fallback();
+  }
+}
+
+function renderFeedbackAttachments() {
+  var wrap = byId('feedbackAttachments');
+  wrap.innerHTML = '';
+  for (var i = 0; i < feedbackState.attachments.length; i += 1) {
+    (function (name) {
+      var div = document.createElement('div');
+      div.className = 'feedback-thumb';
+      div.innerHTML = '<img alt="screenshot" src="/feedback/assets/' + encodeURIComponent(name) + '"><button type="button" aria-label="Remove screenshot">&times;</button>';
+      div.querySelector('button').addEventListener('click', function () {
+        feedbackState.attachments = feedbackState.attachments.filter(function (n) { return n !== name; });
+        renderFeedbackAttachments();
+      });
+      wrap.appendChild(div);
+    })(feedbackState.attachments[i]);
+  }
+}
+
+function uploadFeedbackFile(file) {
+  if (!file || !/^image\//.test(file.type)) { toast('Only image files can be attached.'); return; }
+  var reader = new FileReader();
+  reader.onload = function () {
+    var dataUrl = String(reader.result || '');
+    var comma = dataUrl.indexOf(',');
+    postJson('/api/feedback/screenshot', { filename: file.name || 'screenshot.png', mime: file.type, data_base64: dataUrl.slice(comma + 1) }, function (err, result) {
+      if (err) { toast('Screenshot upload failed: ' + err.message); return; }
+      feedbackState.attachments.push(result.name);
+      renderFeedbackAttachments();
+      toast('Screenshot attached.');
+    });
+  };
+  reader.readAsDataURL(file);
+}
+
+function resetFeedbackForm() {
+  byId('feedbackForm').reset();
+  feedbackState.editingId = null;
+  feedbackState.attachments = [];
+  byId('feedbackEditId').value = '';
+  byId('feedbackFormTitle').textContent = 'File feedback';
+  byId('feedbackSubmitBtn').textContent = 'Submit feedback';
+  byId('feedbackCancelEditBtn').hidden = true;
+  renderFeedbackAttachments();
+}
+
+function fillFeedbackForm(item) {
+  feedbackState.editingId = item.id;
+  feedbackState.attachments = (item.attachments || []).slice();
+  byId('feedbackEditId').value = String(item.id);
+  byId('feedbackType').value = item.type;
+  byId('feedbackSeverity').value = item.severity;
+  byId('feedbackTitle').value = item.title || '';
+  byId('feedbackDescription').value = item.description || '';
+  byId('feedbackSteps').value = item.steps || '';
+  byId('feedbackExpected').value = item.expected || '';
+  byId('feedbackActual').value = item.actual || '';
+  byId('feedbackRecommended').value = item.recommended || '';
+  byId('feedbackFormTitle').textContent = 'Edit #' + item.id;
+  byId('feedbackSubmitBtn').textContent = 'Save changes';
+  byId('feedbackCancelEditBtn').hidden = false;
+  renderFeedbackAttachments();
+  byId('feedbackSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function collectFeedbackPayload() {
+  return {
+    type: byId('feedbackType').value,
+    severity: byId('feedbackSeverity').value,
+    title: feedbackText('feedbackTitle'),
+    description: feedbackText('feedbackDescription'),
+    steps: feedbackText('feedbackSteps'),
+    expected: feedbackText('feedbackExpected'),
+    actual: feedbackText('feedbackActual'),
+    recommended: feedbackText('feedbackRecommended'),
+    attachments: feedbackState.attachments.slice()
+  };
+}
+
+function feedbackQuery() {
+  var q = '?sort=' + encodeURIComponent(feedbackState.sort) + '&descending=' + (feedbackState.desc ? '1' : '0');
+  if (feedbackState.status) { q += '&status=' + encodeURIComponent(feedbackState.status); }
+  if (feedbackState.type) { q += '&type=' + encodeURIComponent(feedbackState.type); }
+  return q;
+}
+
+function loadFeedback() {
+  getJson('/api/feedback' + feedbackQuery(), function (err, data) {
+    if (err) { byId('feedbackList').innerHTML = '<p class="muted">Could not load feedback: ' + escapeHtml(err.message) + '</p>'; return; }
+    feedbackState.items = (data && data.items) || [];
+    renderFeedbackCounts();
+    renderFeedbackList();
+  });
+}
+
+function renderFeedbackCounts() {
+  var counts = { open: 0, accepted: 0, criticalHigh: 0, done: 0 };
+  for (var i = 0; i < feedbackState.items.length; i += 1) {
+    var it = feedbackState.items[i];
+    if (it.status === 'done') { counts.done += 1; } else { counts.open += 1; }
+    if (it.status === 'accepted') { counts.accepted += 1; }
+    if (it.severity === 'critical' || it.severity === 'high') { counts.criticalHigh += 1; }
+  }
+  byId('feedbackCounts').innerHTML =
+    '<span class="feedback-count-chip"><b>' + counts.open + '</b> open</span>' +
+    '<span class="feedback-count-chip"><b>' + counts.accepted + '</b> queued</span>' +
+    '<span class="feedback-count-chip"><b>' + counts.criticalHigh + '</b> crit/high</span>' +
+    '<span class="feedback-count-chip"><b>' + counts.done + '</b> done</span>';
+}
+
+function feedbackTime(value) { return String(value || '').replace('T', ' ').replace('Z', ' UTC'); }
+
+function renderFeedbackItem(item) {
+  var html = '<article class="feedback-item" data-id="' + item.id + '" data-severity="' + escapeHtml(item.severity) + '" data-status="' + escapeHtml(item.status) + '">';
+  html += '<div class="feedback-item-head">'
+    + '<span class="badge-chip badge-type">' + escapeHtml(feedbackTypeLabels[item.type] || item.type) + '</span>'
+    + '<span class="badge-chip badge-severity-' + escapeHtml(item.severity) + '">' + escapeHtml(feedbackSeverityLabels[item.severity] || item.severity) + '</span>'
+    + '<span class="badge-chip badge-status-' + escapeHtml(item.status) + '">' + escapeHtml(feedbackStatusLabels[item.status] || item.status) + '</span>'
+    + '<span class="feedback-item-title">' + escapeHtml(item.title) + '</span>'
+    + '<span class="muted">#' + item.id + '</span>'
+    + '</div>';
+  html += '<div class="feedback-item-meta">filed ' + escapeHtml(feedbackTime(item.created_at)) + ' · updated ' + escapeHtml(feedbackTime(item.updated_at)) + '</div>';
+  if (item.description) { html += '<div class="feedback-item-body">' + escapeHtml(item.description) + '</div>'; }
+  var detailParts = [];
+  if (item.steps) { detailParts.push('<strong>Steps to reproduce</strong>\n' + escapeHtml(item.steps)); }
+  if (item.expected) { detailParts.push('<strong>Expected</strong>\n' + escapeHtml(item.expected)); }
+  if (item.actual) { detailParts.push('<strong>Actual</strong>\n' + escapeHtml(item.actual)); }
+  if (item.recommended) { detailParts.push('<strong>Recommended fix</strong>\n' + escapeHtml(item.recommended)); }
+  if (detailParts.length) { html += '<details class="feedback-details"><summary class="muted">Steps / Expected / Actual / Recommended</summary><div class="feedback-item-body">' + detailParts.join('\n\n') + '</div></details>'; }
+  var attachments = item.attachments || [];
+  if (attachments.length) {
+    html += '<div class="feedback-item-images">';
+    for (var i = 0; i < attachments.length; i += 1) {
+      html += '<a href="/feedback/assets/' + encodeURIComponent(attachments[i]) + '" target="_blank" rel="noopener"><img alt="screenshot ' + (i + 1) + '" src="/feedback/assets/' + encodeURIComponent(attachments[i]) + '"></a>';
+    }
+    html += '</div>';
+  }
+  html += '<div class="feedback-item-actions">'
+    + '<button class="btn btn-secondary btn-small" data-action="copy" type="button">Copy as Markdown</button>'
+    + '<button class="btn btn-ghost btn-small" data-action="edit" type="button">Edit</button>'
+    + '<select data-action="status" aria-label="Mark triaged"><option value="" selected>Mark triaged…</option>'
+    + Object.keys(feedbackStatusLabels).filter(function (k) { return k !== 'new'; }).map(function (k) { return '<option value="' + k + '">' + escapeHtml(feedbackStatusLabels[k]) + '</option>'; }).join('')
+    + '</select>'
+    + '<button class="btn btn-ghost btn-small" data-action="toggle-done" type="button">' + (item.status === 'done' ? 'Reopen' : 'Mark done') + '</button>'
+    + '<button class="btn btn-danger btn-small" data-action="delete" type="button">Delete</button>'
+    + '</div>';
+  html += '</article>';
+  return html;
+}
+
+function renderFeedbackList() {
+  var list = byId('feedbackList');
+  if (!feedbackState.items.length) { list.innerHTML = '<p class="muted">No feedback yet. File the first item on the left.</p>'; return; }
+  var html = '';
+  for (var i = 0; i < feedbackState.items.length; i += 1) { html += renderFeedbackItem(feedbackState.items[i]); }
+  list.innerHTML = html;
+}
+
+byId('feedbackForm').addEventListener('submit', function (ev) {
+  ev.preventDefault();
+  var payload = collectFeedbackPayload();
+  if (!payload.title) { toast('Title is required.'); return; }
+  if (feedbackState.editingId) {
+    payload.id = feedbackState.editingId;
+    postJson('/api/feedback/update', payload, function (err) {
+      if (err) { toast('Save failed: ' + err.message); return; }
+      toast('Feedback #' + feedbackState.editingId + ' updated.');
+      resetFeedbackForm();
+      loadFeedback();
+    });
+  } else {
+    postJson('/api/feedback/create', payload, function (err, result) {
+      if (err) { toast('Submit failed: ' + err.message); return; }
+      toast('Feedback #' + (result && result.item ? result.item.id : '') + ' filed.');
+      resetFeedbackForm();
+      loadFeedback();
+    });
+  }
+});
+byId('feedbackResetBtn').addEventListener('click', resetFeedbackForm);
+byId('feedbackCancelEditBtn').addEventListener('click', resetFeedbackForm);
+byId('feedbackSort').addEventListener('change', function () { feedbackState.sort = this.value; loadFeedback(); });
+byId('feedbackSortDirBtn').addEventListener('click', function () { feedbackState.desc = !feedbackState.desc; this.textContent = feedbackState.desc ? '↓' : '↑'; loadFeedback(); });
+byId('feedbackStatusFilter').addEventListener('change', function () { feedbackState.status = this.value; loadFeedback(); });
+byId('feedbackTypeFilter').addEventListener('change', function () { feedbackState.type = this.value; loadFeedback(); });
+byId('feedbackFileInput').addEventListener('change', function () { var files = this.files || []; for (var i = 0; i < files.length; i += 1) { uploadFeedbackFile(files[i]); } this.value = ''; });
+var feedbackDropzone = byId('feedbackDropzone');
+feedbackDropzone.addEventListener('click', function (ev) { if (ev.target.closest('.feedback-browse')) { return; } byId('feedbackFileInput').click(); });
+feedbackDropzone.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); byId('feedbackFileInput').click(); } });
+['dragenter', 'dragover'].forEach(function (name) { feedbackDropzone.addEventListener(name, function (ev) { ev.preventDefault(); feedbackDropzone.classList.add('drag-over'); }); });
+['dragleave', 'drop'].forEach(function (name) { feedbackDropzone.addEventListener(name, function (ev) { ev.preventDefault(); feedbackDropzone.classList.remove('drag-over'); }); });
+feedbackDropzone.addEventListener('drop', function (ev) { var files = (ev.dataTransfer && ev.dataTransfer.files) || []; for (var i = 0; i < files.length; i += 1) { uploadFeedbackFile(files[i]); } });
+byId('feedbackSection').addEventListener('paste', function (ev) {
+  var items = (ev.clipboardData && ev.clipboardData.items) || [];
+  for (var i = 0; i < items.length; i += 1) { if (items[i].kind === 'file') { var file = items[i].getAsFile(); if (file) { uploadFeedbackFile(file); ev.preventDefault(); } } }
+});
+byId('feedbackList').addEventListener('click', function (ev) {
+  var button = ev.target.closest('[data-action]');
+  if (!button || button.tagName === 'SELECT') { return; }
+  var article = button.closest('.feedback-item');
+  var id = article ? Number(article.getAttribute('data-id')) : 0;
+  var item = null;
+  for (var i = 0; i < feedbackState.items.length; i += 1) { if (feedbackState.items[i].id === id) { item = feedbackState.items[i]; break; } }
+  if (!item) { return; }
+  var action = button.getAttribute('data-action');
+  if (action === 'copy') {
+    getJson('/api/feedback/markdown?id=' + id, function (err, data) {
+      if (err) { toast('Could not build Markdown: ' + err.message); return; }
+      copyTextFeedback((data && data.markdown) || '', function (ok) {
+        if (!ok) { toast('Clipboard copy failed — try again.'); return; }
+        button.textContent = '✓ Copied';
+        button.disabled = true;
+        window.setTimeout(function () { button.textContent = 'Copy as Markdown'; button.disabled = false; }, 2000);
+        toast('Markdown for #' + id + ' copied to clipboard.');
+      });
+    });
+    return;
+  }
+  if (action === 'edit') { fillFeedbackForm(item); return; }
+  if (action === 'toggle-done') {
+    var next = item.status === 'done' ? 'new' : 'done';
+    postJson('/api/feedback/update', { id: id, status: next }, function (err) { if (err) { toast('Update failed: ' + err.message); return; } loadFeedback(); });
+    return;
+  }
+  if (action === 'delete') {
+    if (!confirm('Delete feedback #' + id + ' (' + item.title + ')? This cannot be undone.')) { return; }
+    postJson('/api/feedback/delete', { id: id }, function (err) { if (err) { toast('Delete failed: ' + err.message); return; } toast('Feedback #' + id + ' deleted.'); if (feedbackState.editingId === id) { resetFeedbackForm(); } loadFeedback(); });
+  }
+});
+byId('feedbackList').addEventListener('change', function (ev) {
+  var select = ev.target.closest('select[data-action="status"]');
+  if (!select || !select.value) { return; }
+  var article = select.closest('.feedback-item');
+  var id = article ? Number(article.getAttribute('data-id')) : 0;
+  postJson('/api/feedback/update', { id: id, status: select.value }, function (err) {
+    if (err) { toast('Update failed: ' + err.message); return; }
+    toast('Feedback #' + id + ' marked: ' + feedbackStatusLabels[select.value]);
+    loadFeedback();
+  });
+});
+loadFeedback();
+
 """
 
 _CSS = """
@@ -1244,7 +1615,7 @@ h1,h2,h3{margin:0;font-weight:700}
 .line-error{color:#f87171}.line-warn{color:#fbbf24}.line-info{color:#cbd5e1}
 .terminal-footer{display:flex;justify-content:space-between;align-items:center}
 .pill{display:inline-block;margin:2px 2px;padding:2px 6px;background:#111;border:1px solid var(--border);border-radius:6px;font-size:10px}
-.btn{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:#111;color:var(--text);font-weight:600;cursor:pointer;transition:all .15s ease}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:#111;color:var(--text);font-weight:600;cursor:pointer;transition:all .15s ease;text-decoration:none}
 .btn:hover{border-color:#334155;background:#161616}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn-primary{border-color:#155e75;background:#083344;color:#67e8f9}
@@ -1284,6 +1655,61 @@ h1,h2,h3{margin:0;font-weight:700}
 @media (max-width:1100px){.layout{grid-template-columns:1fr}.node-grid{grid-template-columns:repeat(2,1fr)}.opportunity-body{grid-template-columns:1fr}}
 @media (prefers-reduced-motion: reduce){.manager-ring-inner,.running .manager-ring-outer{animation:none}}
 @media (prefers-reduced-motion: reduce){.orb-ring,.orb-gloss,.pipeline-packet,.line,.bell-btn.bell-shake,.anatomy-blocker.block .anatomy-value,.live-trades-card.positions-open .exit-trade-btn,.node-conflict,.btn-execute.accept-ready{animation:none !important}.manager-orb-wrap{transition:none}.pipeline-packet,.line{opacity:1 !important;transform:none !important}.anatomy-fill,.anatomy-center-fill{transition:none}}
+.feedback-section{margin:16px 0;padding:18px}
+.feedback-page{max-width:1500px;margin:0 auto;padding:0 16px}
+.feedback-page .feedback-section{margin-top:12px}
+.feedback-strip{justify-content:space-between}
+.feedback-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:12px}
+.feedback-counts{display:flex;gap:8px;flex-wrap:wrap}
+.feedback-count-chip{border:1px solid var(--border);border-radius:8px;padding:4px 10px;font-size:12px;color:var(--muted)}
+.feedback-count-chip b{color:#e5e5e5}
+.feedback-grid{display:grid;grid-template-columns:minmax(320px,460px) 1fr;gap:18px;align-items:start}
+.feedback-form{max-height:calc(100vh - 150px);overflow-y:auto;padding-right:6px;scrollbar-width:thin}
+.feedback-form-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px;position:sticky;top:-1px;background:var(--panel);z-index:2;padding:4px 0}
+.feedback-form-title{font-size:14px;text-transform:uppercase;letter-spacing:.08em;color:#a3a3a3;margin:0}
+.feedback-row-2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.feedback-form .field{margin-bottom:10px}
+.feedback-form textarea,.feedback-form input[type=text],.feedback-form select{width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:#e5e5e5;padding:8px 10px;font:inherit;font-size:13px}
+.feedback-form textarea:focus,.feedback-form input[type=text]:focus,.feedback-form select:focus{outline:2px solid #22d3ee;outline-offset:0}
+.field-inline{margin:0}
+.field-inline select{font-size:12px;padding:6px 8px}
+.feedback-dropzone{border:1.5px dashed var(--border);border-radius:10px;padding:12px;text-align:center;display:flex;flex-direction:column;gap:6px;align-items:center;cursor:pointer}
+.feedback-dropzone:focus,.feedback-dropzone.drag-over{outline:2px solid #22d3ee;border-color:#22d3ee}
+.feedback-browse{display:inline-block;cursor:pointer}
+.feedback-attachments{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.feedback-thumb{position:relative;border:1px solid var(--border);border-radius:8px;overflow:hidden;width:84px;height:84px}
+.feedback-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.feedback-thumb button{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.75);border:none;color:#fff;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:12px;line-height:1}
+.feedback-form-actions{display:flex;gap:10px;margin-top:4px}
+.btn-small{font-size:12px;padding:6px 10px}
+.feedback-list-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.feedback-list-controls{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+.feedback-list{display:flex;flex-direction:column;gap:10px;max-height:calc(100vh - 190px);min-height:320px;overflow-y:auto;padding-right:4px;scrollbar-width:thin}
+.feedback-item{border:1px solid var(--border);border-left:3px solid #525252;border-radius:10px;padding:10px 12px;background:var(--panel2)}
+.feedback-item[data-severity=critical]{border-left-color:#ef4444}
+.feedback-item[data-severity=high]{border-left-color:#f97316}
+.feedback-item[data-severity=medium]{border-left-color:#fbbf24}
+.feedback-item[data-severity=low]{border-left-color:#22c55e}
+.feedback-item[data-status=done]{opacity:.65}
+.feedback-item-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.feedback-item-title{font-weight:600;font-size:14px;color:#f5f5f5;flex:1;min-width:160px}
+.feedback-item-meta{color:var(--muted);font-size:11px;margin:4px 0 6px}
+.badge-chip{border:1px solid var(--border);border-radius:999px;padding:2px 9px;font-size:11px;color:#d4d4d4;white-space:nowrap}
+.badge-type{color:#67e8f9;border-color:#164e63}
+.badge-severity-critical,.badge-severity-high{color:#fca5a5;border-color:#7f1d1d}
+.badge-severity-medium{color:#fde68a;border-color:#713f12}
+.badge-severity-low{color:#86efac;border-color:#14532d}
+.badge-status-new{color:#e5e5e5}
+.badge-status-accepted{color:#86efac;border-color:#14532d}
+.badge-status-needs_info{color:#fde68a;border-color:#713f12}
+.badge-status-duplicate,.badge-status-wont_fix,.badge-status-not_a_bug{color:#a3a3a3}
+.badge-status-done{color:#86efac;border-color:#14532d}
+.feedback-item-body{font-size:12.5px;color:#d4d4d4;white-space:pre-wrap;margin:6px 0 8px;max-height:180px;overflow-y:auto}
+.feedback-item-images{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.feedback-item-images a img{width:72px;height:72px;object-fit:cover;border-radius:6px;border:1px solid var(--border)}
+.feedback-item-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.feedback-item-actions select{background:var(--panel);border:1px solid var(--border);border-radius:6px;color:#e5e5e5;padding:6px 8px;font-size:12px}
+@media (max-width:1100px){.feedback-grid{grid-template-columns:1fr}.feedback-row-2{grid-template-columns:1fr}.feedback-form,.feedback-list{max-height:none;overflow-y:visible}}
 """
 
 
@@ -1318,6 +1744,7 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
     <button id="stopAgentBtn" class="btn btn-danger" type="button" {'disabled' if not running else ''}>Stop Agent</button>
     <button id="killSwitchBtn" class="btn btn-kill-switch" type="button" title="EMERGENCY: flatten all XAUUSD demo positions and halt the bot">KILL SWITCH</button>
     <button id="shutdownDashboardBtn" class="btn btn-danger btn-shutdown" type="button">Shutdown Dashboard</button>
+    <a class="btn btn-ghost" href="/feedback" title="Open the feedback and issues page">Feedback</a>
     <label class="override-toggle" id="overrideToggleLabel" title="TESTING ONLY: bypass macro/fusion gates and allow a bare 0.01-lot demo order">
       <input type="checkbox" id="overrideBlocksToggle" />
       <span>DEMO OVERRIDE</span>
@@ -1551,6 +1978,7 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
   </aside>
 </main>
 
+
 <dialog id="evidenceDrawer" class="modal">
   <div class="modal-content">
     <div class="modal-header"><h2>Decision Evidence</h2><button class="icon-btn" id="closeEvidenceDrawerBtn" type="button" aria-label="Close">×</button></div>
@@ -1625,7 +2053,7 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
 
 <div id="toast" class="toast"></div>
 
-<footer class="footer"><span>GOLD BOT · read-only dashboard + guarded executor · loopback only · no scope changes</span><span>Risk exits are veto-immune. The Kill Switch button flattens positions and halts the bot via the guarded CLI.</span></footer>
+<footer class="footer"><span>GOLD BOT · read-only trading dashboard + guarded executor + local feedback log (no MT5, no ledger writes) · loopback only · no scope changes</span><span>Risk exits are veto-immune. The Kill Switch button flattens positions and halts the bot via the guarded CLI.</span></footer>
 
 <script>
 {_APP_JS}
@@ -1645,5 +2073,48 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
 <body>
 {body}
 <div id="appState" data-state="{_e(state_json)}" hidden></div>
+</body>
+</html>"""
+
+
+def render_feedback_page() -> str:
+    body = f"""
+<header class="state-strip feedback-strip" role="banner">
+  <div class="brand">
+    <span class="logo"></span>
+    <div class="brand-text">
+      <h1>GOLD BOT</h1>
+      <p>Quantamental Agentic Desk · Feedback &amp; Issues</p>
+    </div>
+  </div>
+  <div class="controls">
+    <a class="btn btn-primary" href="/" title="Back to the live trading dashboard">← Dashboard</a>
+    <span class="chip chip-neutral"><span class="chip-label">LOCAL</span><span class="chip-value">FEEDBACK LOG</span></span>
+  </div>
+</header>
+
+<main class="feedback-page">
+{_FEEDBACK_BODY}
+</main>
+
+<div id="toast" class="toast"></div>
+
+<footer class="footer"><span>GOLD BOT · feedback log · loopback only · no MT5, no ledger writes, no scope changes</span><span>Copy any item as Markdown and hand it to the agent.</span></footer>
+
+<script>
+{_FEEDBACK_JS}
+</script>
+"""
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Gold bot feedback and issues - bugs, improvements and ideas, copied out as Markdown tickets.">
+<title>Gold Bot - Feedback &amp; Issues</title>
+<style>{_CSS}</style>
+</head>
+<body>
+{body}
 </body>
 </html>"""
