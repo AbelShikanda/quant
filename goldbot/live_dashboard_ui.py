@@ -1604,7 +1604,7 @@ _CSS = """
 }
 *{box-sizing:border-box} body{margin:0;padding:18px;background:var(--bg);color:var(--text);font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 h1,h2,h3{margin:0;font-weight:700}
-.state-strip{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;position:sticky;top:8px;z-index:5}
+.state-strip{display:flex;align-items:center;justify-content:space-between;gap:14px;row-gap:10px;flex-wrap:wrap;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;position:sticky;top:8px;z-index:5}
 .top-panel-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;align-items:start}
 .top-panel-row .mission-panel{margin-top:0}
 @media (max-width:1180px){.top-panel-row{grid-template-columns:1fr}}
@@ -1744,13 +1744,17 @@ h1,h2,h3{margin:0;font-weight:700}
 .brand-text h1{font-size:16px;letter-spacing:.08em}
 .brand-text p{margin:0;color:var(--muted);font-size:11px}
 .chips{display:flex;gap:8px;flex-wrap:wrap}
+.status-rail{display:flex;flex-wrap:wrap;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border)}
+.status-rail .chip{min-width:0;padding:4px 8px;gap:2px}
+.status-rail .chip-label{font-size:8px;letter-spacing:.04em}
+.status-rail .chip-value{font-size:10px}
 .chip{display:flex;flex-direction:column;min-width:86px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel)}
 .chip-label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em}
 .chip-value{font-weight:700;font-size:12px}
 .chip-green{border-color:#166534;box-shadow:0 0 10px rgba(34,197,94,.28)}
 .chip-red{border-color:#7f1d1d;box-shadow:0 0 10px rgba(239,68,68,.28)}
 .chip-amber{border-color:#713f12}
-.controls{display:flex;gap:8px;align-items:center}
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 .override-toggle{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:#0a0a0a;color:var(--muted);font-weight:700;font-size:11px;cursor:pointer;user-select:none;white-space:nowrap}
 .override-toggle input{accent-color:#f59e0b;cursor:pointer;transform:scale(1.2)}
 .override-toggle.on{color:#fca5a5;border-color:#7f1d1d;box-shadow:0 0 14px rgba(239,68,68,.45)}
@@ -2024,13 +2028,6 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
       <p>Quantamental Agentic Desk · FBS-Demo XAUUSD</p>
     </div>
   </div>
-  <div class="chips">
-    {_chip("Mode", mode, "neutral")}
-    {_chip("Profile", profile.upper(), "amber")}
-    <div class="chip chip-{'green' if running else 'neutral'}" id="botChip"><span class="chip-label">BOT</span><span class="chip-value" id="botChipValue">{'RUNNING' if running else 'STOPPED'}</span></div>
-    <div class="chip chip-{'green' if mt5.get('status') == 'up' else 'red'}" id="mt5Chip"><span class="chip-label">MT5</span><span class="chip-value" id="mt5ChipValue">{_e(str(mt5.get('status', 'unknown')).upper())}</span></div>
-    <div class="chip chip-{'red' if kill_switch else 'green'}" id="riskChip"><span class="chip-label">RISK</span><span class="chip-value" id="riskChipValue">DD {_e(drawdown)} KILL {'ON' if kill_switch else 'off'}</span></div>
-  </div>
   <div class="controls">
     <button id="startAgentBtn" class="btn btn-primary" type="button">{'Running' if running else 'Start Agent'}</button>
     <button id="stopAgentBtn" class="btn btn-danger" type="button" {'disabled' if not running else ''}>Stop Agent</button>
@@ -2299,6 +2296,13 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
   </section>
 
   <aside class="panel terminal-panel">
+    <div class="status-rail" aria-label="Runtime status">
+      {_chip("Mode", mode, "neutral")}
+      {_chip("Profile", profile.upper(), "amber")}
+      <div class="chip chip-{'green' if running else 'neutral'}" id="botChip"><span class="chip-label">BOT</span><span class="chip-value" id="botChipValue">{'RUNNING' if running else 'STOPPED'}</span></div>
+      <div class="chip chip-{'green' if mt5.get('status') == 'up' else 'red'}" id="mt5Chip"><span class="chip-label">MT5</span><span class="chip-value" id="mt5ChipValue">{_e(str(mt5.get('status', 'unknown')).upper())}</span></div>
+      <div class="chip chip-{'red' if kill_switch else 'green'}" id="riskChip"><span class="chip-label">RISK</span><span class="chip-value" id="riskChipValue">DD {_e(drawdown)} KILL {'ON' if kill_switch else 'off'}</span></div>
+    </div>
     <div class="terminal-header">
       <h2 class="panel-title">Agent Terminal</h2>
       <span id="terminalStatus" class="badge badge-{'green' if running else 'neutral'}">{'STREAMING' if running else 'IDLE'}</span>
