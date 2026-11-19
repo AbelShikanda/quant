@@ -1949,10 +1949,18 @@ h1,h2,h3{margin:0;font-weight:700}
 .node-wait{border-color:#713f12;box-shadow:0 0 14px rgba(251,191,36,.22)}
 .center{display:flex;flex-direction:column;gap:12px}
 .manager-orb-svg{transform-origin:50% 50%;transition:filter .25s ease}
-.manager-orb-svg.beat{animation:orbBeat .55s cubic-bezier(.2,.9,.3,1.15)}
-@keyframes orbBeat{0%{transform:scale(1)}35%{transform:scale(1.055)}100%{transform:scale(1)}}
-.manager-orb-svg.beat .orb-body{filter:brightness(1.45)}
-.manager-orb-svg.beat .orb-gloss{opacity:.85}
+.manager-orb-svg.beat{animation:sonarBreath 2.6s cubic-bezier(.16,.65,.3,1)}
+@keyframes sonarBreath{0%{transform:scale(1)}32%{transform:scale(1.16)}62%{transform:scale(1.05)}100%{transform:scale(1)}}
+.sonar{transform-origin:115px 115px;transform:scale(1);opacity:0;pointer-events:none;stroke-linecap:round}
+.sonar-a{stroke:rgba(216,180,254,.6);stroke-width:5}
+.sonar-b{stroke:rgba(168,85,247,.35);stroke-width:2.5}
+.manager-orb-svg.beat .sonar-a{animation:sonarPing 2.6s cubic-bezier(.13,.6,.3,1)}
+.manager-orb-svg.beat .sonar-b{animation:sonarPing 2.6s .38s cubic-bezier(.13,.6,.3,1)}
+@keyframes sonarPing{0%{transform:scale(1);opacity:.85}55%{opacity:.32}100%{transform:scale(3.1);opacity:0}}
+.manager-orb-svg.beat .orb-body{animation:coreEcho 2.6s ease-out}
+@keyframes coreEcho{0%{opacity:1}30%{opacity:.5}62%{opacity:.5}100%{opacity:1}}
+.manager-orb-svg.beat .orb-gloss{animation:glossEcho 2.6s ease-out}
+@keyframes glossEcho{0%{opacity:.5}30%{opacity:.1}62%{opacity:.1}100%{opacity:.5}}
 .upstream-stale .orb-ring,.upstream-idle .orb-ring{animation-play-state:paused !important}
 .upstream-stale .manager-orb-svg,.upstream-idle .manager-orb-svg{filter:saturate(.45);opacity:.72}
 .orb-hover .manager-orb-svg{filter:saturate(1.28) brightness(1.13)}
@@ -1970,7 +1978,7 @@ h1,h2,h3{margin:0;font-weight:700}
 .orb-toast.error{border-color:#ef4444;color:#fecaca}
 .orb-toast.good{border-color:#22c55e;color:#bbf7d0}
 .orb-toast.mute{border-color:#475569;color:#cbd5e1}
-@media (prefers-reduced-motion: reduce){.manager-orb-svg.beat{animation:none !important}.manager-orb-svg.beat .orb-body{filter:brightness(1.35)}}
+@media (prefers-reduced-motion: reduce){.manager-orb-svg.beat{animation:none !important}.manager-orb-svg.beat .sonar-a,.manager-orb-svg.beat .sonar-b,.manager-orb-svg.beat .orb-body,.manager-orb-svg.beat .orb-gloss{animation:none !important}.manager-orb-svg.beat .orb-body{opacity:.85}}
 .manager-card{position:relative;display:flex;flex-direction:column;align-items:center;gap:10px;min-height:280px;border-radius:14px;background:linear-gradient(180deg,#161616,#0a0a0a);border:1px solid var(--border);overflow:hidden;text-align:center;perspective:720px;padding:14px}
 .manager-orb-wrap{position:relative;width:230px;height:230px;transform-style:preserve-3d;transition:transform .18s ease}
 .manager-orb-svg{position:absolute;inset:0;overflow:visible}
@@ -2361,6 +2369,8 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
               <stop offset="45%" stop-color="#ffffff" stop-opacity="0"/>
             </linearGradient>
           </defs>
+          <circle class="sonar sonar-b" cx="115" cy="115" r="46" fill="none"/>
+          <circle class="sonar sonar-a" cx="115" cy="115" r="46" fill="none"/>
           <circle class="orb-ring orb-ring-1" cx="115" cy="115" r="106" fill="none" stroke="rgba(168,85,247,.32)" stroke-width="1.5" stroke-dasharray="5 13"/>
           <circle class="orb-ring orb-ring-2" cx="115" cy="115" r="86" fill="none" stroke="rgba(34,211,238,.30)" stroke-width="1.2" stroke-dasharray="2 9"/>
           <circle class="orb-ring orb-ring-3" cx="115" cy="115" r="63" fill="none" stroke="rgba(251,191,36,.38)" stroke-width="1.4" stroke-dasharray="18 10"/>
