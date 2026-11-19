@@ -1202,6 +1202,7 @@ function resetFeedbackForm() {
   byId('feedbackEditId').value = '';
   byId('feedbackFormTitle').textContent = 'File feedback';
   byId('feedbackSubmitBtn').textContent = 'Submit feedback';
+  byId('feedbackSubmitBtn').disabled = false;
   byId('feedbackCancelEditBtn').hidden = true;
   renderFeedbackAttachments();
 }
@@ -1322,17 +1323,37 @@ byId('feedbackForm').addEventListener('submit', function (ev) {
   ev.preventDefault();
   var payload = collectFeedbackPayload();
   if (!payload.title) { toast('Title is required.'); return; }
+  var submitBtn = byId('feedbackSubmitBtn');
+  if (submitBtn.disabled) { return; } // already in flight; ignore double-clicks
+  var wasEditing = Boolean(feedbackState.editingId);
+  submitBtn.disabled = true;
+  submitBtn.textContent = wasEditing ? 'Saving…' : 'Submitting…';
+  byId('feedbackCancelEditBtn').disabled = true;
+  byId('feedbackResetBtn').disabled = true;
+  var settled = function (failed) {
+    if (failed) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = wasEditing ? 'Save changes' : 'Submit feedback';
+      byId('feedbackCancelEditBtn').disabled = false;
+      byId('feedbackResetBtn').disabled = false;
+    } else {
+      byId('feedbackCancelEditBtn').disabled = false;
+      byId('feedbackResetBtn').disabled = false;
+    }
+  };
   if (feedbackState.editingId) {
     payload.id = feedbackState.editingId;
     postJson('/api/feedback/update', payload, function (err) {
-      if (err) { toast('Save failed: ' + err.message); return; }
+      if (err) { settled(true); toast('Save failed: ' + err.message); return; }
+      settled(false);
       toast('Feedback #' + feedbackState.editingId + ' updated.');
       resetFeedbackForm();
       loadFeedback();
     });
   } else {
     postJson('/api/feedback/create', payload, function (err, result) {
-      if (err) { toast('Submit failed: ' + err.message); return; }
+      if (err) { settled(true); toast('Submit failed: ' + err.message); return; }
+      settled(false);
       toast('Feedback #' + (result && result.item ? result.item.id : '') + ' filed.');
       resetFeedbackForm();
       loadFeedback();
