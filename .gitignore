@@ -36,3 +36,5 @@ data/manual/**/refresh_event.json
 Thumbs.db
 .vscode/
 .idea/
+
+dashboard-live-*.log
