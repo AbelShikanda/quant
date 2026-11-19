@@ -2323,6 +2323,8 @@ h1,h2,h3{margin:0;font-weight:700}
 .btn.copy-ok{border-color:#166534;color:#4ade80}
 .btn.copy-fail{border-color:#7f1d1d;color:#fca5a5}
 .pill{display:inline-block;margin:2px 2px;padding:2px 6px;background:#111;border:1px solid var(--border);border-radius:6px;font-size:10px}
+#latestDecisions{display:flex;flex-direction:column;gap:4px;max-height:132px;overflow-y:auto;overscroll-behavior:contain;padding-right:4px}
+#latestDecisions .pill{display:block;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .btn{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:#111;color:var(--text);font-weight:600;cursor:pointer;transition:all .15s ease;text-decoration:none}
 .btn:hover{border-color:#334155;background:#161616}
 .btn:disabled{opacity:.4;cursor:not-allowed}
