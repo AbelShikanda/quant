@@ -200,6 +200,50 @@ def _decision_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _position_aggregate(connection: sqlite3.Connection) -> dict[str, Any]:
+    """Sum every position the ledger holds, not just the page-sized slice."""
+    row, _error = _one(
+        connection,
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN close_time_utc IS NULL THEN 1 ELSE 0 END) AS open_count,
+            SUM(CASE WHEN close_time_utc IS NOT NULL THEN 1 ELSE 0 END) AS closed_count,
+            SUM(volume) AS total_volume,
+            SUM(CASE WHEN close_time_utc IS NULL THEN volume ELSE 0 END) AS open_volume,
+            SUM(COALESCE(realized_pnl, 0)) AS realized_pnl,
+            SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) AS losses
+        FROM positions
+        """,
+    )
+    if not row:
+        return {
+            "total": 0,
+            "open_count": 0,
+            "closed_count": 0,
+            "total_volume": 0.0,
+            "open_volume": 0.0,
+            "realized_pnl": 0.0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate_pct": None,
+        }
+    closed = int(row.get("closed_count") or 0)
+    wins = int(row.get("wins") or 0)
+    return {
+        "total": int(row.get("total") or 0),
+        "open_count": int(row.get("open_count") or 0),
+        "closed_count": closed,
+        "total_volume": _as_float(row.get("total_volume")) or 0.0,
+        "open_volume": _as_float(row.get("open_volume")) or 0.0,
+        "realized_pnl": _as_float(row.get("realized_pnl")) or 0.0,
+        "wins": wins,
+        "losses": int(row.get("losses") or 0),
+        "win_rate_pct": (wins / closed * 100.0) if closed else None,
+    }
+
+
 def _fundamental_components(fundamentals: dict[str, Any]) -> list[dict[str, Any]]:
     components = _json_dict(fundamentals.get("components"))
     rows: list[dict[str, Any]] = []
@@ -263,6 +307,7 @@ def load_state(
         "open_position": None,
         "open_positions": [],
         "positions": [],
+        "position_aggregate": {},
         "orders": [],
         "fills": [],
         "decisions": [],
@@ -372,6 +417,7 @@ def load_state(
             (max_rows,),
         )
         _add_error(errors, error)
+        state["position_aggregate"] = _position_aggregate(connection)
 
         chart_bars, error = _rows(
             connection,

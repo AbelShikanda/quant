@@ -221,6 +221,21 @@ def test_load_state_reads_live_demo_run(tmp_path: Path) -> None:
     assert state["errors"] == []
 
 
+def test_load_state_reports_position_aggregate(tmp_path: Path) -> None:
+    path = tmp_path / "aggregate.sqlite"
+    started = _populate_ledger(path, finished=False, mode="demo_live")
+    state = load_state(path, max_rows=5, now=started + timedelta(seconds=5))
+
+    aggregate = state["position_aggregate"]
+    assert aggregate["total"] == 1
+    assert aggregate["open_count"] == 1
+    assert aggregate["closed_count"] == 0
+    assert aggregate["total_volume"] == pytest.approx(0.01)
+    assert aggregate["open_volume"] == pytest.approx(0.01)
+    assert aggregate["realized_pnl"] == 0.0
+    assert aggregate["win_rate_pct"] is None
+
+
 def test_load_state_reports_upstream_heartbeat(tmp_path: Path) -> None:
     path = tmp_path / "upstream.sqlite"
     started = _populate_ledger(path, finished=False, mode="demo_live")

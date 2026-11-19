@@ -1110,6 +1110,7 @@ function updateState(data) {
   byId('recentOrders').innerHTML = ordersText.length
     ? ordersText.map(function (t) { return '<div class="evidence-line">' + escapeHtml(t) + '</div>'; }).join('')
     : '<span class="muted">no orders</span>';
+  renderPositionAggregate(s);
   var positions = (s.positions || []).slice(0, 3);
   var positionsText = [];
   for (var p = 0; p < positions.length; p += 1) {
@@ -1131,6 +1132,25 @@ function updateState(data) {
     byId('chartTimeRange').textContent = '';
   }
   drawChart(bars, s);
+}
+
+function renderPositionAggregate(s) {
+  var el = byId('positionAggregate');
+  if (!el) { return; }
+  var agg = s.position_aggregate || {};
+  var total = Number(agg.total || 0);
+  var pnl = agg.realized_pnl == null ? null : Number(agg.realized_pnl);
+  var pnlCls = total === 0 || pnl == null ? 'muted' : (pnl >= 0 ? 'ok' : 'warn');
+  var winRate = agg.win_rate_pct == null ? null : Number(agg.win_rate_pct);
+  var tiles = [
+    ['POSITIONS', String(total) + ' (' + Number(agg.open_count || 0) + ' open / ' + Number(agg.closed_count || 0) + ' closed)', ''],
+    ['VOLUME', Number(agg.total_volume || 0).toFixed(2) + ' lots' + (Number(agg.open_volume || 0) > 0 ? ' - ' + Number(agg.open_volume).toFixed(2) + ' open' : ''), ''],
+    ['REALIZED P&L', pnl == null ? 'n/a' : (pnl >= 0 ? '+' : '') + pnl.toFixed(2), pnlCls],
+    ['WIN RATE', winRate == null ? 'n/a' : winRate.toFixed(0) + '% (' + Number(agg.wins || 0) + 'W/' + Number(agg.losses || 0) + 'L)', winRate == null ? 'muted' : (winRate >= 50 ? 'ok' : 'warn')]
+  ];
+  el.innerHTML = tiles.map(function (tile) {
+    return '<span class="agg-tile ' + tile[2] + '"><span class="agg-k">' + escapeHtml(tile[0]) + '</span><span class="agg-v">' + escapeHtml(tile[1]) + '</span></span>';
+  }).join('');
 }
 
 function drawChart(bars, state) {
@@ -2070,6 +2090,13 @@ h1,h2,h3{margin:0;font-weight:700}
 .evidence-item{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px}
 .evidence-item dt{color:var(--muted);font-size:10px;text-transform:uppercase}
 .evidence-item dd{margin:3px 0 0;font-size:11px}
+.evidence-aggregate{grid-column:1/-1}
+.evidence-aggregate dt{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.agg-note{font-size:9px;letter-spacing:0;text-transform:none;color:var(--muted)}
+.agg-tile{display:inline-flex;flex-direction:column;gap:1px;margin:5px 6px 0 0;padding:5px 8px;border:1px solid var(--border);border-radius:8px;background:#0a0a0a}
+.agg-k{font-size:8px;letter-spacing:.1em;color:var(--muted)}
+.agg-v{font-size:11px;font-weight:700}
+.agg-tile.ok .agg-v{color:#4ade80}.agg-tile.warn .agg-v{color:#fca5a5}.agg-tile.muted .agg-v{color:#cbd5e1}
 .layout{display:grid;grid-template-columns:330px 1fr 370px;gap:14px;margin-top:12px;align-items:start}
 .agent-steps ol{list-style:none}
 .terminal-panel{max-height:420px}
@@ -2486,6 +2513,10 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
     </div>
 
     <div class="panel evidence-grid" id="evidenceGrid">
+      <div class="evidence-item evidence-aggregate">
+        <dt>Positions · aggregate <span class="agg-note" id="aggNote">all ledger rows</span></dt>
+        <dd id="positionAggregate" class="muted">—</dd>
+      </div>
       <div class="evidence-item"><dt>Latest decisions</dt><dd id="latestDecisions" class="muted">—</dd></div>
       <div class="evidence-item"><dt>Recent orders</dt><dd id="recentOrders" class="muted">—</dd></div>
       <div class="evidence-item"><dt>Positions</dt><dd id="recentPositions" class="muted">—</dd></div>
