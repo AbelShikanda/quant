@@ -1233,6 +1233,76 @@ def _cmd_wgc_check(args: argparse.Namespace) -> int:
     return 0 if report["status"] == "pass" else 1
 
 
+def _cmd_clear_halt(args: argparse.Namespace) -> int:
+    """Disarm the emergency halt flag. Demo-only, phrase-guarded, ledger-logged."""
+    from .contracts import utc_now
+    from .data import MT5DataFeed
+
+    phrase = str(args.confirm_clear or "")
+    if phrase != "RESUME TRADING":
+        print(
+            "clear-halt refused: --confirm-clear must be exactly 'RESUME TRADING' (case sensitive)",
+            file=sys.stderr,
+        )
+        return 2
+
+    halt_path = Path(args.ledger).parent / "kill-switch.halt"
+    if not halt_path.exists():
+        print(f"clear-halt: no halt flag at {halt_path}; nothing to clear")
+        return 0
+
+    try:
+        feed = MT5DataFeed(symbol="XAUUSD", broker_utc_offset_minutes=120)
+        feed.connect()
+        try:
+            account = feed.account_info()
+        finally:
+            feed.close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"clear-halt refused: MT5 connect failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+    if account.get("trade_mode") != 0:
+        print(
+            f"clear-halt refused: account trade_mode={account.get('trade_mode')!r}; expected demo mode 0",
+            file=sys.stderr,
+        )
+        return 2
+    if account.get("login") != args.expected_login:
+        print(
+            f"clear-halt refused: connected login {account.get('login')} != expected {args.expected_login}",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        halt_path.unlink()
+    except OSError as exc:
+        print(f"clear-halt: could not remove {halt_path}: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        with Ledger(args.ledger) as ledger:
+            ledger.log_event(
+                level="WARNING",
+                component="clear_halt",
+                event_type="clear_halt",
+                message="emergency halt flag cleared by owner action",
+                correlation_id=None,
+                payload={
+                    "halt_file": str(halt_path),
+                    "expected_login": args.expected_login,
+                    "cleared_at_utc": utc_now().isoformat(),
+                },
+                logged_at_utc=utc_now(),
+            )
+    except Exception as exc:  # noqa: BLE001 - never swallow the file removal over logging
+        print(f"warning: could not log clear_halt to ledger: {exc}", file=sys.stderr)
+
+    print(f"clear-halt: removed {halt_path}; agent may run")
+    return 0
+
+
 def _cmd_reconcile(args: argparse.Namespace) -> int:
     """Compare the ledger against the MT5 broker. Read-only; never sends orders."""
     from .reconcile import run_reconcile
@@ -1967,6 +2037,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="prove the guard chain only: no orders sent, halt flag NOT armed, evidence recorded",
     )
     kill.set_defaults(func=_cmd_kill_switch)
+
+    clear = subparsers.add_parser(
+        "clear-halt",
+        help="Disarm the emergency halt flag so the agent may run; demo-only, phrase-guarded",
+    )
+    clear.add_argument("--ledger", required=True, help="execution ledger SQLite path (for live logging + halt path)")
+    clear.add_argument("--expected-login", required=True, type=int, help="demo account login; must match connected account")
+    clear.add_argument(
+        "--confirm-clear",
+        required=True,
+        help="must be exactly 'RESUME TRADING'",
+    )
+    clear.set_defaults(func=_cmd_clear_halt)
 
     demo = subparsers.add_parser(
         "demo-param",

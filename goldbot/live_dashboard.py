@@ -1710,6 +1710,18 @@ def _wgc_check_command() -> list[str]:
     ]
 
 
+def _clear_halt_command(*, expected_login: int) -> list[str]:
+    return _python_command() + [
+        "-m",
+        "goldbot.cli",
+        "clear-halt",
+        "--ledger",
+        EXECUTION_LEDGER,
+        "--expected-login",
+        str(expected_login),
+    ]
+
+
 def _kill_switch_command(*, expected_login: int, broker_utc_offset_minutes: int) -> list[str]:
     return _python_command() + [
         "-m",
@@ -2096,6 +2108,41 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
                     "ok": ok,
                     "exit_code": proc.returncode,
                     "output": output.splitlines()[-20:],
+                },
+            )
+            return
+
+        if path == "/api/agent/clear-halt":
+            phrase = str(payload.get("confirm") or "")
+            if phrase != "RESUME TRADING":
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"v": 1, "ok": False, "error": "confirm must be exactly 'RESUME TRADING'"})
+                return
+            cmd = _clear_halt_command(expected_login=self.server.expected_login)
+            _append_log("WARNING", f"clear-halt requested from dashboard: {' '.join(cmd)}")
+            try:
+                proc = subprocess.run(
+                    cmd + ["--confirm-clear", "RESUME TRADING"],
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                _append_log("ERROR", "clear-halt timed out after 30s")
+                _json_response(self, HTTPStatus.GATEWAY_TIMEOUT, {"v": 1, "ok": False, "error": "clear-halt timed out"})
+                return
+            output = ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
+            for line in output.splitlines():
+                _append_log("WARNING", f"[clear-halt] {line}")
+            ok = proc.returncode == 0
+            _json_response(
+                self,
+                HTTPStatus.OK if ok else HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "v": 1,
+                    "ok": ok,
+                    "exit_code": proc.returncode,
+                    "output": output.splitlines()[-10:],
                 },
             )
             return

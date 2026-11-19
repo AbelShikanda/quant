@@ -580,6 +580,8 @@ function renderExecQuality(s) {
   } else {
     setText('eqHalt', 'clear', 'ok');
   }
+  var banner = byId('haltBanner');
+  if (banner) { banner.className = 'halt-banner' + (q.halt_flag ? ' armed' : ''); }
 
   // Vitals
   var mt5Status = (s.mt5 && s.mt5.status) || 'unknown';
@@ -1187,6 +1189,29 @@ byId('confirmKillSwitchBtn').addEventListener('click', function () {
     toast(result && result.ok ? 'Kill switch executed: positions flattened, bot halted.' : 'Kill switch failed; see terminal.');
   });
 });
+byId('resumeTradingBtn').addEventListener('click', function () {
+  byId('clearHaltPhraseInput').value = '';
+  byId('confirmClearHaltBtn').disabled = true;
+  try { byId('clearHaltPhraseInput').focus(); } catch (e) {}
+  byId('clearHaltModal').showModal();
+});
+byId('closeClearHaltModalBtn').addEventListener('click', function () { closeDialog('clearHaltModal'); });
+byId('cancelClearHaltBtn').addEventListener('click', function () { closeDialog('clearHaltModal'); });
+byId('clearHaltPhraseInput').addEventListener('input', function (e) {
+  var target = e.target || e.srcElement;
+  byId('confirmClearHaltBtn').disabled = String(target.value).replace(/^\s+|\s+$/g, '') !== 'RESUME TRADING';
+});
+byId('confirmClearHaltBtn').addEventListener('click', function () {
+  var phrase = String(byId('clearHaltPhraseInput').value).replace(/^\s+|\s+$/g, '');
+  if (phrase !== 'RESUME TRADING') { alert('Phrase must be RESUME TRADING'); return; }
+  setButtonState('confirmClearHaltBtn', 'RESUMING...', true);
+  postJson('/api/agent/clear-halt', { confirm: phrase }, function (err, result) {
+    setButtonState('confirmClearHaltBtn', 'RESUME TRADING', false);
+    closeDialog('clearHaltModal');
+    if (err) { alert(err.message); return; }
+    toast(result && result.ok ? 'Halt flag cleared: the agent may run again. The kill switch can re-arm it at any time.' : 'Clear-halt failed; see terminal.');
+  });
+});
 byId('closeShutdownModalBtn').addEventListener('click', function () { closeDialog('shutdownModal'); });
 byId('cancelShutdownBtn').addEventListener('click', function () { closeDialog('shutdownModal'); });
 byId('confirmShutdownBtn').addEventListener('click', function () {
@@ -1597,6 +1622,14 @@ h1,h2,h3{margin:0;font-weight:700}
 .profile-panel:not(.profile-collapsed) .mission-caret{transform:rotate(0)}
 .profile-body{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:14px;min-height:0}
 @media (max-width:760px){.profile-body{grid-template-columns:1fr}}
+.warn-text{color:#fbbf24}
+.halt-banner{display:none;align-items:center;justify-content:space-between;gap:14px;margin-top:12px;padding:10px 14px;border:1px solid #7f1d1d;background:#450a0a;border-radius:12px}
+.halt-banner.armed{display:flex}
+.halt-banner-text{font-size:11px;color:#fecaca;letter-spacing:.02em;line-height:1.45;min-width:0}
+.halt-banner-text strong{color:#fca5a5;text-transform:uppercase;letter-spacing:.1em;margin-right:6px}
+.halt-banner-btn{border:1px solid #b91c1c;background:#7f1d1d;color:#fecaca;border-radius:8px;padding:8px 14px;font-size:11px;font-weight:800;letter-spacing:.08em;cursor:pointer;white-space:nowrap}
+.halt-banner-btn:hover{background:#991b1b}
+.halt-banner-btn:focus-visible{outline:2px solid #fca5a5;outline-offset:2px}
 .profile-select{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:8px;font-size:13px;width:100%}
 .profile-spec{display:grid;gap:6px}
 .spec-row{display:flex;justify-content:space-between;gap:12px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11px}
@@ -2026,6 +2059,13 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
 </header>
 
 <div id="overrideBanner" class="banner banner-danger" style="display:none">DEMO OVERRIDE ACTIVE - macro/fusion gates are bypassed. This will place a bare 0.01 XAUUSD demo order if you click Accept &amp; Execute. For testing only.</div>
+<div id="haltBanner" class="halt-banner" role="alert">
+  <div class="halt-banner-text"><strong>Halt armed</strong> The emergency kill-switch flag is set. The agent refuses to run; no orders can be sent, even with <code>--auto-execute</code>. Only clear it when you are intentionally resuming demo trading.</div>
+  <button id="resumeTradingBtn" class="halt-banner-btn" type="button">RESUME TRADING</button>
+</div>
+
+
+
 <div class="top-panel-row">
 <section class="panel profile-panel profile-collapsed" id="profilePanel">
   <button class="profile-toggle" id="profileToggle" type="button" aria-expanded="false" aria-controls="profileBody">
@@ -2337,6 +2377,17 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
       <p class="danger-text">This IMMEDIATELY closes EVERY open XAUUSD demo position at market, writes <code>kill-switch.halt</code> (the agent refuses to run again), and records a CRITICAL incident in the ledger. It does not flatten other instruments and cannot undo a bad fill. Demo account only.</p>
       <label class="field"><span>Type FLATTEN AND HALT to authorize</span><input id="killSwitchPhraseInput" type="text" autocomplete="off" spellcheck="false" placeholder="FLATTEN AND HALT"></label>
       <div class="modal-actions"><button class="btn btn-secondary" id="cancelKillSwitchBtn" type="button">Cancel</button><button class="btn btn-kill-switch" id="confirmKillSwitchBtn" type="button" disabled>FLATTEN AND HALT</button></div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="clearHaltModal" class="modal">
+  <div class="modal-content modal-narrow">
+    <div class="modal-header"><h2 class="warn-text">RESUME TRADING</h2><button class="icon-btn" id="closeClearHaltModalBtn" type="button" aria-label="Close">&times;</button></div>
+    <div class="modal-body">
+      <p class="warn-text">This DELETES <code>reports/kill-switch.halt</code>. The agent will be allowed to start and, if you run it with <code>--auto-execute</code>, to send orders on qualifying ENTER_LONG signals to the demo account. The kill switch can be re-armed at any time. Demo account only. The event is recorded in the ledger.</p>
+      <label class="field"><span>Type RESUME TRADING to authorize</span><input id="clearHaltPhraseInput" type="text" autocomplete="off" spellcheck="false" placeholder="RESUME TRADING"></label>
+      <div class="modal-actions"><button class="btn btn-secondary" id="cancelClearHaltBtn" type="button">Cancel</button><button class="btn btn-secondary" id="confirmClearHaltBtn" type="button" disabled>RESUME TRADING</button></div>
     </div>
   </div>
 </dialog>
