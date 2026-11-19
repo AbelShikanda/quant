@@ -13,6 +13,7 @@ that.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import os
 from dataclasses import dataclass, field
@@ -146,6 +147,7 @@ def refresh_series(
         macro_dir.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_suffix(dest.suffix + ".tmp")
         tmp.write_text(text, encoding="utf-8", newline="")
+        sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
         changed = True
         if dest.exists():
@@ -165,6 +167,9 @@ def refresh_series(
             age_days=(now - latest).days if latest else None,
             changed=changed,
             errors=[],
+            sha256=sha256,
+            bytes=len(text.encode("utf-8")),
+            fetched_at_utc=utc_now().isoformat(),
         )
         return result
     except httpx.HTTPError as exc:

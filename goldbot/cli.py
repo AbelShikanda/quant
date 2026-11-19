@@ -1188,10 +1188,11 @@ def _cmd_refresh_macro(args: argparse.Namespace) -> int:
         for series in result.series:
             age = series.get("age_days")
             age_text = f"{age}d old" if age is not None else "unknown age"
+            sha = (series.get("sha256") or "")[:12] or "n/a"
             print(
-                f"  {series['series_id']:9s} {series['status']:6s} "
+                f"  {series['series_id']:14s} {series['status']:7s} "
                 f"latest={series.get('latest_date')} ({age_text}) "
-                f"rows={series.get('rows')} changed={series.get('changed')} {series.get('errors') or ''}"
+                f"rows={series.get('rows')} changed={series.get('changed')} sha256={sha} {series.get('errors') or ''}"
             )
         print(f"  enforced stale_after_days (manifest, unchanged): {limits}")
         print("  NOTE: this command never widens staleness limits and never edits the manifest.")

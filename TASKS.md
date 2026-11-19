@@ -106,7 +106,7 @@ dashboard/wizard**. Do not skip ahead.
   checks the manual-file policy; the strategy loader does not yet ingest the XLSX.
 - [~] Staleness, gap, and revision logging for every source. Staleness is reported in views; full
   per-source gap/revision logging is not yet persisted.
-- [ ] Raw snapshot retention with source hash and retrieval time.
+- [x] Raw snapshot retention with source hash and retrieval time (refresh_macro ledger event carries sha256 + fetched_at_utc per series).
 
 ### Fundamental engine
 
