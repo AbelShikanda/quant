@@ -964,14 +964,18 @@ function updateState(data) {
     var price = ord.price == null ? 'n/a' : String(ord.price);
     ordersText.push(ord.side + ' ' + ord.volume + ' @ ' + price);
   }
-  byId('recentOrders').textContent = ordersText.length ? ordersText.join(' · ') : 'no orders';
+  byId('recentOrders').innerHTML = ordersText.length
+    ? ordersText.map(function (t) { return '<div class="evidence-line">' + escapeHtml(t) + '</div>'; }).join('')
+    : '<span class="muted">no orders</span>';
   var positions = (s.positions || []).slice(0, 3);
   var positionsText = [];
   for (var p = 0; p < positions.length; p += 1) {
     var pos = positions[p];
     positionsText.push(pos.side + ' ' + pos.volume + ' open ' + pos.open_price + ' pnl ' + (pos.realized_pnl == null ? 'n/a' : pos.realized_pnl));
   }
-  byId('recentPositions').textContent = positionsText.length ? positionsText.join(' · ') : 'no positions';
+  byId('recentPositions').innerHTML = positionsText.length
+    ? positionsText.map(function (t) { return '<div class="evidence-line">' + escapeHtml(t) + '</div>'; }).join('')
+    : '<span class="muted">no positions</span>';
   var curve = s.equity_curve || [];
   var lastEq = curve.length ? curve[curve.length - 1].equity : s.equity;
   byId('equitySummary').textContent = 'equity ' + fmtNum(lastEq, 2) + ' dd ' + fmtNum(drawdown, 2) + '%';
@@ -1748,6 +1752,8 @@ h1,h2,h3{margin:0;font-weight:700}
 .status-rail .chip{min-width:0;padding:4px 8px;gap:2px}
 .status-rail .chip-label{font-size:8px;letter-spacing:.04em}
 .status-rail .chip-value{font-size:10px}
+.evidence-line{font-size:11px;line-height:1.45;padding:3px 0;border-bottom:1px dotted var(--border)}
+.evidence-line:last-child{border-bottom:none;padding-bottom:0}
 .chip{display:flex;flex-direction:column;min-width:86px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel)}
 .chip-label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em}
 .chip-value{font-weight:700;font-size:12px}
