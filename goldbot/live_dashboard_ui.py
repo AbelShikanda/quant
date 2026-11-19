@@ -485,18 +485,35 @@ function renderExecAnatomy(s) {
   };
   var signCls = function (v) { return v == null ? '' : (v >= 0 ? 'ok' : 'warn'); };
 
-  setText('anFund', '0.55 x ' + fmtSigned(fund, 3) + ' = ' + fmtSigned(fundContrib, 3), signCls(fundContrib));
-  setText('anTech', '0.40 x ' + fmtSigned(tech, 3) + ' = ' + fmtSigned(techContrib, 3), signCls(techContrib));
-  setText('anCombined', fmtSigned(fusion.combined_score, 3) + ' vs 0.200', signCls(fusion.combined_score));
+  var fundWord = fund == null ? '\u2014' : (fund >= 0.3 ? 'SUPPORTIVE' : (fund <= -0.3 ? 'HEADWIND' : 'NEUTRAL'));
+  var techWord = tech == null ? '\u2014' : (tech >= 0.3 ? 'FIRING' : (tech <= -0.3 ? 'FADING' : 'QUIET'));
+  var fundTone = fund == null ? 'neutral' : (fund >= 0.3 ? 'ok' : (fund <= -0.3 ? 'bad' : 'neutral'));
+  var techTone = tech == null ? 'neutral' : (tech >= 0.3 ? 'ok' : (tech <= -0.3 ? 'bad' : 'neutral'));
+  var decisionType = (s.latest_decision || {}).decision_type || '';
+  var callText = decisionType === 'ENTER_LONG' ? 'ENTER LONG'
+    : decisionType ? String(decisionType).replace(/_/g, ' ') : '\u2014';
+  var callCls = decisionType === 'ENTER_LONG' ? 'ok' : (decisionType ? 'warn' : 'neutral');
+  var overseerDecision = (s.overseer || {}).decision || (s.overseer || {}).verdict || '\u2014';
+  var fw = byId('anFundWord'); if (fw) { fw.textContent = fundWord; fw.className = 'anat-word ' + fundTone; }
+  var tw = byId('anTechWord'); if (tw) { tw.textContent = techWord; tw.className = 'anat-word ' + techTone; }
+  var cw = byId('anCallWord'); if (cw) { cw.textContent = callText; cw.className = 'anat-word ' + callCls; }
+  var fEl = byId('anFund'); if (fEl) { fEl.textContent = fundContrib == null ? '\u2014' : ('= ' + fmtSigned(fundContrib, 3)); fEl.className = 'anat-num ' + signCls(fundContrib); }
+  var tEl = byId('anTech'); if (tEl) { tEl.textContent = techContrib == null ? '\u2014' : ('= ' + fmtSigned(techContrib, 3)); tEl.className = 'anat-num ' + signCls(techContrib); }
+  var cEl = byId('anCombined'); if (cEl) { cEl.textContent = fmtSigned(fusion.combined_score, 3) + ' vs +0.200'; cEl.className = 'anat-num ' + signCls(fusion.combined_score); }
+  var csEl = byId('anCallSub'); if (csEl) { csEl.textContent = 'overseer ' + overseerDecision + ' \u00b7 needs \u2265 +0.200'; }
   setBar('anFundBar', 0.55, fundContrib);
   setBar('anTechBar', 0.40, techContrib);
   setCenterFill('anCombinedFill', fusion.combined_score);
   var blocker = s.gate_blocker || (fusion.reasons && fusion.reasons.length ? fusion.reasons[fusion.reasons.length - 1] : '');
-  setText('anBlocker', blocker || 'none', 'warn');
+  var isBlock = !!blocker && blocker !== 'none' && blocker !== 'unknown';
+  setText('anBlocker', isBlock ? blocker : 'clear', isBlock ? 'warn' : 'ok');
   var blockWrap = byId('anBlockerWrap');
   if (blockWrap) {
-    var isBlock = !!blocker && blocker !== 'none' && blocker !== 'unknown';
     blockWrap.className = 'anatomy-line anatomy-blocker' + (isBlock ? ' block' : '');
+  }
+  var panel = byId('anatomyPanel');
+  if (panel) {
+    panel.className = 'anatomy' + (decisionType === 'ENTER_LONG' ? ' call-enter' : (isBlock ? ' call-block' : ''));
   }
 
   var stamp = byId('anatomyStamp');
@@ -2010,6 +2027,18 @@ h1,h2,h3{margin:0;font-weight:700}
 .anatomy-value{font-family:'Cascadia Code',Consolas,monospace;font-size:11px;color:var(--text);text-align:right}
 .anatomy-blocker .anatomy-value{color:#fca5a5}
 .anatomy-value.ok{color:#4ade80}
+.anatomy-legend{margin:0 0 2px;font-size:8.5px;color:var(--muted);letter-spacing:.02em}
+.anatomy-cols{display:grid;grid-template-columns:1fr 1fr 1.15fr;gap:8px}
+.anat-col{border:1px solid var(--border);border-radius:9px;background:#0a0a0a;padding:7px 8px;display:flex;flex-direction:column;gap:5px;min-width:0}
+.anat-col-head{font-size:8px;letter-spacing:.12em;color:var(--muted);text-transform:uppercase}
+.anat-word{font-size:11px;font-weight:800;letter-spacing:.04em;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.anat-word.ok{color:#4ade80}.anat-word.warn{color:#fbbf24}.anat-word.bad{color:#fca5a5}.anat-word.neutral{color:#cbd5e1}
+.anat-cap{font-size:8px;color:var(--muted)}
+.anat-num{font-family:'Cascadia Code',Consolas,monospace;font-size:10px;color:var(--text);white-space:nowrap}
+.anat-num.ok{color:#4ade80}.anat-num.warn{color:#fca5a5}
+.anat-call .anat-word{font-size:12px}
+.anatomy.call-enter .anat-call{border-color:#166534;box-shadow:0 0 12px rgba(34,197,94,.18)}
+.anatomy.call-block .anat-call{border-color:#7f1d1d;box-shadow:0 0 12px rgba(239,68,68,.16)}
 .anatomy-value.warn{color:#fca5a5}
 .manager-card.state-enter .orb-body{filter:drop-shadow(0 0 30px rgba(34,197,94,.65))}
 .manager-card.state-enter .manager-decision{color:#86efac}
@@ -2381,20 +2410,29 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
           <h3 class="anatomy-title">Decision anatomy</h3>
           <span class="anatomy-stamp" id="anatomyStamp"></span>
         </div>
-        <div class="anatomy-line">
-          <span class="anatomy-label">fundamental</span>
-          <span class="anatomy-track"><span class="anatomy-fill" id="anFundBar"></span></span>
-          <span class="anatomy-value" id="anFund">—</span>
-        </div>
-        <div class="anatomy-line">
-          <span class="anatomy-label">technical</span>
-          <span class="anatomy-track"><span class="anatomy-fill" id="anTechBar"></span></span>
-          <span class="anatomy-value" id="anTech">—</span>
-        </div>
-        <div class="anatomy-line anatomy-combined">
-          <span class="anatomy-label">combined</span>
-          <span class="anatomy-track anatomy-track-center"><span class="anatomy-center-fill" id="anCombinedFill"></span></span>
-          <span class="anatomy-value" id="anCombined">—</span>
+        <p class="anatomy-legend">score = 0.55 × fundamentals + 0.40 × technicals · entry gate: ≥ +0.200 and no blockers</p>
+        <div class="anatomy-cols">
+          <div class="anat-col">
+            <div class="anat-col-head">Fundamental</div>
+            <div class="anat-word" id="anFundWord">—</div>
+            <div class="anatomy-track"><span class="anatomy-fill" id="anFundBar"></span></div>
+            <div class="anat-num" id="anFund">—</div>
+            <div class="anat-cap">0.55 × score</div>
+          </div>
+          <div class="anat-col">
+            <div class="anat-col-head">Technical</div>
+            <div class="anat-word" id="anTechWord">—</div>
+            <div class="anatomy-track"><span class="anatomy-fill" id="anTechBar"></span></div>
+            <div class="anat-num" id="anTech">—</div>
+            <div class="anat-cap">0.40 × score</div>
+          </div>
+          <div class="anat-col anat-call">
+            <div class="anat-col-head">The call</div>
+            <div class="anat-word" id="anCallWord">—</div>
+            <div class="anatomy-track anatomy-track-center"><span class="anatomy-center-fill" id="anCombinedFill"></span></div>
+            <div class="anat-num" id="anCombined">—</div>
+            <div class="anat-cap" id="anCallSub">overseer — · needs ≥ +0.200</div>
+          </div>
         </div>
         <div class="anatomy-line anatomy-blocker" id="anBlockerWrap">
           <span class="anatomy-label">blocked by</span>
