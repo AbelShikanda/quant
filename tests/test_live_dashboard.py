@@ -221,19 +221,47 @@ def test_load_state_reads_live_demo_run(tmp_path: Path) -> None:
     assert state["errors"] == []
 
 
-def test_load_state_reports_position_aggregate(tmp_path: Path) -> None:
-    path = tmp_path / "aggregate.sqlite"
+def test_position_trace_records_ledger_steps(tmp_path: Path) -> None:
+    path = tmp_path / "trace.sqlite"
     started = _populate_ledger(path, finished=False, mode="demo_live")
     state = load_state(path, max_rows=5, now=started + timedelta(seconds=5))
 
-    aggregate = state["position_aggregate"]
-    assert aggregate["total"] == 1
-    assert aggregate["open_count"] == 1
-    assert aggregate["closed_count"] == 0
-    assert aggregate["total_volume"] == pytest.approx(0.01)
-    assert aggregate["open_volume"] == pytest.approx(0.01)
-    assert aggregate["realized_pnl"] == 0.0
-    assert aggregate["win_rate_pct"] is None
+    traces = state["position_traces"]
+    assert len(traces) == 1
+    assert traces[0]["position_id"] == "pos-1"
+    keys = [step["key"] for step in traces[0]["steps"]]
+    assert keys == ["OPEN", "DECISION", "ORDER", "FILL", "CLOSE"]
+    assert all(step["missing"] is False for step in traces[0]["steps"])
+    assert traces[0]["steps"][2]["detail"].startswith("FILLED")
+
+
+def test_position_trace_flags_missing_order_rows(tmp_path: Path) -> None:
+    path = tmp_path / "orphan.sqlite"
+    opened = datetime(2026, 1, 19, 15, 15, tzinfo=timezone.utc)
+    with Ledger(path, schema_path=SCHEMA) as ledger:
+        ledger.record_position(
+            position_id="broker-2151174520",
+            symbol="XAUUSD",
+            side="LONG",
+            volume=0.01,
+            open_price=3867.03,
+            open_time_utc=opened,
+            close_price=3865.49,
+            close_time_utc=opened + timedelta(hours=2),
+            close_reason="operator request",
+            realized_pnl=-1.54,
+            broker_position_ticket=2151174520,
+            state="DEMO_CLOSED",
+            raw_position={"comment": "goldbot DEMO OVERRIDE"},
+        )
+
+    state = load_state(path, max_rows=5)
+    trace = state["position_traces"][0]
+    order_step = next(step for step in trace["steps"] if step["key"] == "ORDER")
+    assert order_step["missing"] is True
+    assert "guarded order path" in order_step["detail"]
+    assert state["position_aggregate"]["closed_count"] == 1
+    assert state["position_aggregate"]["realized_pnl"] == pytest.approx(-1.54)
 
 
 def test_load_state_reports_upstream_heartbeat(tmp_path: Path) -> None:

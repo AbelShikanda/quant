@@ -244,6 +244,201 @@ def _position_aggregate(connection: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def _position_traces(
+    connection: sqlite3.Connection,
+    positions: list[dict[str, Any]],
+    logs: list[dict[str, Any]],
+    *,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Reconstruct the ledger steps that lead to each displayed position.
+
+    Only facts recorded in the ledger are returned.  When a step has no row
+    (the accidental override fills have no orders/fills rows) the step is
+    marked ``missing`` so the UI can say so instead of inventing a story.
+    """
+    traces: list[dict[str, Any]] = []
+    for position in positions[:limit]:
+        ticket = position.get("broker_position_ticket")
+        open_at = _parse_dt(position.get("open_time_utc"))
+        close_at = _parse_dt(position.get("close_time_utc"))
+        steps: list[dict[str, Any]] = [
+            {
+                "key": "OPEN",
+                "at": position.get("open_time_utc"),
+                "detail": (
+                    f"{position.get('side')} {position.get('volume')} lots "
+                    f"@ {position.get('open_price')}"
+                ),
+                "missing": False,
+            }
+        ]
+
+        decision_row: dict[str, Any] | None = None
+        if open_at is not None:
+            decision_row, _error = _one(
+                connection,
+                """
+                SELECT decision_id, as_of_utc, decision_type, side, payload_json
+                FROM strategy_decisions
+                WHERE as_of_utc <= ?
+                ORDER BY as_of_utc DESC
+                LIMIT 1
+                """,
+                (open_at.isoformat(),),
+            )
+        if decision_row:
+            payload = _json_dict(decision_row.get("payload_json"))
+            overseer = _json_dict(payload.get("overseer"))
+            combined = _as_float(payload.get("combined_score"))
+            detail = f"{decision_row.get('decision_type')} {decision_row.get('side')}"
+            if combined is not None:
+                detail += f" - score {combined:+.3f}"
+            detail += f" - overseer {overseer.get('verdict') or 'n/a'}"
+            steps.append(
+                {
+                    "key": "DECISION",
+                    "at": decision_row.get("as_of_utc"),
+                    "detail": detail,
+                    "missing": False,
+                }
+            )
+        else:
+            steps.append(
+                {
+                    "key": "DECISION",
+                    "at": None,
+                    "detail": "no strategy decision at or before the open time",
+                    "missing": True,
+                }
+            )
+
+        order_row: dict[str, Any] | None = None
+        if ticket is not None:
+            order_row, _error = _one(
+                connection,
+                """
+                SELECT order_id, decision_id, submitted_at_utc, side, volume,
+                       price, state
+                FROM orders
+                WHERE broker_order_ticket = ?
+                ORDER BY submitted_at_utc DESC
+                LIMIT 1
+                """,
+                (ticket,),
+            )
+        if order_row is None and decision_row is not None:
+            order_row, _error = _one(
+                connection,
+                """
+                SELECT order_id, decision_id, submitted_at_utc, side, volume,
+                       price, state
+                FROM orders
+                WHERE decision_id = ?
+                ORDER BY submitted_at_utc ASC
+                LIMIT 1
+                """,
+                (decision_row.get("decision_id"),),
+            )
+        if order_row:
+            steps.append(
+                {
+                    "key": "ORDER",
+                    "at": order_row.get("submitted_at_utc"),
+                    "detail": (
+                        f"{order_row.get('state')} {order_row.get('side')} "
+                        f"{order_row.get('volume')} @ {order_row.get('price')} "
+                        f"- {order_row.get('order_id')}"
+                    ),
+                    "missing": False,
+                }
+            )
+            fill_rows, _error = _rows(
+                connection,
+                """
+                SELECT fill_id, filled_at_utc, volume, price
+                FROM fills
+                WHERE order_id = ?
+                ORDER BY filled_at_utc ASC
+                """,
+                (order_row.get("order_id"),),
+            )
+            for fill in fill_rows:
+                steps.append(
+                    {
+                        "key": "FILL",
+                        "at": fill.get("filled_at_utc"),
+                        "detail": (
+                            f"{fill.get('volume')} @ {fill.get('price')} "
+                            f"- {fill.get('fill_id')}"
+                        ),
+                        "missing": False,
+                    }
+                )
+        else:
+            steps.append(
+                {
+                    "key": "ORDER",
+                    "at": None,
+                    "detail": (
+                        "no order or fill row recorded - this position was "
+                        "opened outside the guarded order path"
+                    ),
+                    "missing": True,
+                }
+            )
+
+        if close_at is not None:
+            steps.append(
+                {
+                    "key": "CLOSE",
+                    "at": position.get("close_time_utc"),
+                    "detail": (
+                        f"@ {position.get('close_price')} - "
+                        f"{position.get('close_reason') or 'no reason recorded'} "
+                        f"- pnl {position.get('realized_pnl')}"
+                    ),
+                    "missing": False,
+                }
+            )
+        else:
+            steps.append(
+                {
+                    "key": "CLOSE",
+                    "at": None,
+                    "detail": "still open - no close recorded",
+                    "missing": False,
+                }
+            )
+
+        nearby_logs: list[dict[str, Any]] = []
+        if open_at is not None:
+            for entry in logs:
+                parsed = _parse_dt(entry.get("logged_at_utc"))
+                if parsed is None or abs((parsed - open_at).total_seconds()) > 1200:
+                    continue
+                nearby_logs.append(
+                    {
+                        "at": entry.get("logged_at_utc"),
+                        "level": entry.get("level"),
+                        "event": entry.get("event_type"),
+                        "message": str(entry.get("message") or "")[:160],
+                    }
+                )
+            nearby_logs.sort(key=lambda item: str(item.get("at") or ""))
+            nearby_logs = nearby_logs[:8]
+
+        traces.append(
+            {
+                "position_id": position.get("position_id"),
+                "ticket": ticket,
+                "steps": steps,
+                "logs": nearby_logs,
+            }
+        )
+    return traces
+
+
 def _fundamental_components(fundamentals: dict[str, Any]) -> list[dict[str, Any]]:
     components = _json_dict(fundamentals.get("components"))
     rows: list[dict[str, Any]] = []
@@ -308,6 +503,7 @@ def load_state(
         "open_positions": [],
         "positions": [],
         "position_aggregate": {},
+        "position_traces": [],
         "orders": [],
         "fills": [],
         "decisions": [],
@@ -418,6 +614,7 @@ def load_state(
         )
         _add_error(errors, error)
         state["position_aggregate"] = _position_aggregate(connection)
+        state["position_traces"] = _position_traces(connection, positions, logs)
 
         chart_bars, error = _rows(
             connection,

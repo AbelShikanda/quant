@@ -948,6 +948,7 @@ function updateState(data) {
   var s = data.state || data;
   var previousRenderState = window._prevRenderState;
   window._prevRenderState = s;
+  window._lastState = s;
   renderProfileSpec(s.profile_spec || {});
   renderSteps(s);
   renderMission(s);
@@ -1111,15 +1112,7 @@ function updateState(data) {
     ? ordersText.map(function (t) { return '<div class="evidence-line">' + escapeHtml(t) + '</div>'; }).join('')
     : '<span class="muted">no orders</span>';
   renderPositionAggregate(s);
-  var positions = (s.positions || []).slice(0, 3);
-  var positionsText = [];
-  for (var p = 0; p < positions.length; p += 1) {
-    var pos = positions[p];
-    positionsText.push(pos.side + ' ' + pos.volume + ' open ' + pos.open_price + ' pnl ' + (pos.realized_pnl == null ? 'n/a' : pos.realized_pnl));
-  }
-  byId('recentPositions').innerHTML = positionsText.length
-    ? positionsText.map(function (t) { return '<div class="evidence-line">' + escapeHtml(t) + '</div>'; }).join('')
-    : '<span class="muted">no positions</span>';
+  renderEvidencePositions(s);
   var curve = s.equity_curve || [];
   var lastEq = curve.length ? curve[curve.length - 1].equity : s.equity;
   byId('equitySummary').textContent = 'equity ' + fmtNum(lastEq, 2) + ' dd ' + fmtNum(drawdown, 2) + '%';
@@ -1132,6 +1125,31 @@ function updateState(data) {
     byId('chartTimeRange').textContent = '';
   }
   drawChart(bars, s);
+}
+
+window._openTraces = window._openTraces || {};
+
+function fmtTraceTime(value) {
+  if (!value) { return '\u2014'; }
+  var text = String(value);
+  if (text.length >= 16) { return text.slice(0, 10) + ' ' + text.slice(11, 16) + 'Z'; }
+  return text;
+}
+
+function downloadJson(name, payload) {
+  try {
+    var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  } catch (e) {
+    toast('Download failed: ' + e.message);
+  }
 }
 
 function renderPositionAggregate(s) {
@@ -1151,6 +1169,79 @@ function renderPositionAggregate(s) {
   el.innerHTML = tiles.map(function (tile) {
     return '<span class="agg-tile ' + tile[2] + '"><span class="agg-k">' + escapeHtml(tile[0]) + '</span><span class="agg-v">' + escapeHtml(tile[1]) + '</span></span>';
   }).join('');
+}
+
+function renderTraceHtml(trace) {
+  var steps = trace.steps || [];
+  var html = '<ol class="trace-steps">';
+  for (var i = 0; i < steps.length; i += 1) {
+    var step = steps[i] || {};
+    html += '<li class="trace-step' + (step.missing ? ' missing' : '') + '">'
+      + '<span class="trace-key">' + escapeHtml(String(step.key || '')) + '</span>'
+      + '<span class="trace-time">' + escapeHtml(fmtTraceTime(step.at)) + '</span>'
+      + '<span class="trace-detail">' + escapeHtml(String(step.detail || '')) + '</span></li>';
+  }
+  html += '</ol>';
+  var logs = trace.logs || [];
+  if (logs.length) {
+    html += '<div class="trace-logs"><span class="trace-logs-head">ledger logs within 20m of open</span>';
+    for (var j = 0; j < logs.length; j += 1) {
+      var entry = logs[j] || {};
+      html += '<span class="trace-log"><span class="trace-time">' + escapeHtml(fmtTraceTime(entry.at)) + '</span> '
+        + '<span class="trace-key">' + escapeHtml(String(entry.level || '')) + '</span> '
+        + escapeHtml(String(entry.event || '') + ': ' + String(entry.message || '')) + '</span>';
+    }
+    html += '</div>';
+  } else {
+    html += '<span class="trace-empty">no ledger log lines within 20 minutes of the open</span>';
+  }
+  return html;
+}
+
+function renderEvidencePositions(s) {
+  var host = byId('recentPositions');
+  if (!host) { return; }
+  var positions = s.positions || [];
+  var traces = s.position_traces || [];
+  if (!positions.length) {
+    host.innerHTML = '<span class="muted">no positions</span>';
+    return;
+  }
+  var visible = Math.min(positions.length, traces.length);
+  var html = '';
+  for (var i = 0; i < visible; i += 1) {
+    var pos = positions[i] || {};
+    var trace = traces[i] || {};
+    var pid = String(pos.position_id || ('pos-' + i));
+    var open = !!window._openTraces[pid];
+    var pnl = pos.realized_pnl;
+    var pnlCls = pnl == null ? 'muted' : (Number(pnl) >= 0 ? 'ok' : 'warn');
+    var pnlText = pnl == null ? 'n/a' : (Number(pnl) >= 0 ? '+' : '') + Number(pnl).toFixed(2);
+    html += '<div class="evidence-line position-line">'
+      + '<div class="position-row">'
+      + '<span class="position-text">' + escapeHtml(String(pos.side || '?') + ' ' + String(pos.volume == null ? '?' : pos.volume) + ' @ ' + String(pos.open_price == null ? '?' : pos.open_price) + ' \u00b7 ' + (pos.close_time_utc ? 'closed' : 'open') + ' \u00b7 pnl ')
+      + '<span class="' + pnlCls + '">' + escapeHtml(pnlText) + '</span></span>'
+      + '<span class="position-actions">'
+      + '<button class="trace-btn" type="button" data-trace-idx="' + i + '" aria-expanded="' + (open ? 'true' : 'false') + '">' + (open ? 'Hide steps' : 'Steps') + '</button>'
+      + '<button class="trace-dl" type="button" data-trace-dl="' + i + '" title="Download this position and its ledger trace as JSON">JSON</button>'
+      + '</span></div>'
+      + '<div class="trace-panel" id="trace-' + i + '"' + (open ? '' : ' hidden') + '>' + renderTraceHtml(trace) + '</div>'
+      + '</div>';
+  }
+  if (positions.length > visible) {
+    html += '<div class="muted trace-more">' + String(positions.length - visible) + ' older positions in the ledger - latest ' + visible + ' shown</div>';
+  }
+  host.innerHTML = html;
+}
+
+function findTraceButton(el) {
+  while (el && el !== document) {
+    if (el.getAttribute && (el.getAttribute('data-trace-idx') != null || el.getAttribute('data-trace-dl') != null)) {
+      return el;
+    }
+    el = el.parentNode;
+  }
+  return null;
 }
 
 function drawChart(bars, state) {
@@ -1309,6 +1400,53 @@ byId('liveTradesList').addEventListener('click', function (e) {
   byId('exitPhraseInput').value = '';
   try { byId('exitPhraseInput').focus(); } catch (e) {}
   byId('closeTradeModal').showModal();
+});
+byId('recentPositions').addEventListener('click', function (e) {
+  var target = e.target || e.srcElement;
+  var btn = findTraceButton(target);
+  if (!btn) { return; }
+  var st = window._lastState || {};
+  var positions = st.positions || [];
+  var traces = st.position_traces || [];
+  var dlIdx = btn.getAttribute('data-trace-dl');
+  if (dlIdx != null) {
+    var idx = Number(dlIdx);
+    var pos = positions[idx] || {};
+    var trace = traces[idx] || {};
+    downloadJson('position-' + String(pos.position_id || idx) + '-trace.json', {
+      exported_at_utc: new Date().toISOString(),
+      source: 'ledger (read-only)',
+      position: pos,
+      trace: trace
+    });
+    return;
+  }
+  var traceIdx = btn.getAttribute('data-trace-idx');
+  if (traceIdx == null) { return; }
+  var panel = byId('trace-' + traceIdx);
+  if (!panel) { return; }
+  var p = positions[Number(traceIdx)] || {};
+  var pid = String(p.position_id || ('pos-' + traceIdx));
+  var nowHidden = !panel.hasAttribute('hidden');
+  if (nowHidden) {
+    panel.setAttribute('hidden', 'hidden');
+    delete window._openTraces[pid];
+  } else {
+    panel.removeAttribute('hidden');
+    window._openTraces[pid] = true;
+  }
+  btn.setAttribute('aria-expanded', nowHidden ? 'false' : 'true');
+  btn.textContent = nowHidden ? 'Steps' : 'Hide steps';
+});
+byId('downloadAllTracesBtn').addEventListener('click', function () {
+  var st = window._lastState || {};
+  downloadJson('position-traces-' + String(new Date().toISOString().slice(0, 10)) + '.json', {
+    exported_at_utc: new Date().toISOString(),
+    source: 'ledger (read-only)',
+    aggregate: st.position_aggregate || {},
+    positions: st.positions || [],
+    traces: st.position_traces || []
+  });
 });
 byId('closeDeclineModalBtn').addEventListener('click', function () { closeDialog('declineModal'); });
 byId('cancelDeclineBtn').addEventListener('click', function () { closeDialog('declineModal'); });
@@ -2097,6 +2235,28 @@ h1,h2,h3{margin:0;font-weight:700}
 .agg-k{font-size:8px;letter-spacing:.1em;color:var(--muted)}
 .agg-v{font-size:11px;font-weight:700}
 .agg-tile.ok .agg-v{color:#4ade80}.agg-tile.warn .agg-v{color:#fca5a5}.agg-tile.muted .agg-v{color:#cbd5e1}
+.position-line{display:block}
+.position-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.position-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.position-text .ok{color:#4ade80}.position-text .warn{color:#fca5a5}
+.position-actions{display:flex;gap:5px;flex-shrink:0}
+.trace-btn,.trace-dl{font:inherit;font-size:9px;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:6px;border:1px solid var(--border);background:#0d0d0d;color:#cbd5e1;cursor:pointer}
+.trace-btn:hover,.trace-dl:hover{border-color:#334155;color:#e5e7eb}
+.trace-btn[aria-expanded="true"]{border-color:#0e7490;color:#67e8f9}
+.trace-panel{margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);display:flex;flex-direction:column;gap:5px}
+.trace-panel[hidden]{display:none}
+.trace-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.trace-step{display:grid;grid-template-columns:50px 78px minmax(0,1fr);gap:6px;font-size:10px;line-height:1.35;align-items:baseline}
+.trace-key{font-size:8px;letter-spacing:.1em;color:var(--muted)}
+.trace-time{font-family:'Cascadia Code',Consolas,monospace;font-size:9px;color:#9ca3af;white-space:nowrap}
+.trace-detail{color:#d1d5db;overflow-wrap:anywhere}
+.trace-step.missing .trace-key{color:#fbbf24}
+.trace-step.missing .trace-detail{color:#fbbf24}
+.trace-logs{display:flex;flex-direction:column;gap:2px;font-size:9.5px;color:#9ca3af}
+.trace-logs-head{font-size:8px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase}
+.trace-log{overflow-wrap:anywhere}
+.trace-empty{font-size:9.5px;color:var(--muted)}
+.trace-more{font-size:9.5px;padding-top:4px}
 .layout{display:grid;grid-template-columns:330px 1fr 370px;gap:14px;margin-top:12px;align-items:start}
 .agent-steps ol{list-style:none}
 .terminal-panel{max-height:420px}
@@ -2514,7 +2674,7 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
 
     <div class="panel evidence-grid" id="evidenceGrid">
       <div class="evidence-item evidence-aggregate">
-        <dt>Positions · aggregate <span class="agg-note" id="aggNote">all ledger rows</span></dt>
+        <dt>Positions · aggregate <span class="agg-note" id="aggNote">all ledger rows</span><button class="trace-dl" id="downloadAllTracesBtn" type="button" title="Download every position plus its ledger trace as JSON">Download all</button></dt>
         <dd id="positionAggregate" class="muted">—</dd>
       </div>
       <div class="evidence-item"><dt>Latest decisions</dt><dd id="latestDecisions" class="muted">—</dd></div>
