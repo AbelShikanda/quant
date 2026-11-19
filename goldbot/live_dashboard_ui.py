@@ -660,10 +660,49 @@ function renderLiveTrades(state) {
   list.innerHTML = html;
 }
 
+function renderMission(s) {
+  var mission = s.promotion || {};
+  var stage = byId('missionStage');
+  var summary = byId('missionSummary');
+  var list = byId('missionGateList');
+  var nextEl = byId('missionNext');
+  var complete = byId('missionComplete');
+  if (!list || !stage || !summary) { return; }
+
+  stage.textContent = mission.stage_label || 'DEMO VALIDATION';
+  complete.textContent = (mission.gates_passed || 0) + '/' + (mission.gates_total || 7);
+  if (mission.promotion_eligible) {
+    summary.textContent = '7 promotion gates — passed. Not alone sufficient for live.';
+    stage.className = 'mission-stage-badge mission-stage-live';
+    complete.style.color = '#4ade80';
+  } else {
+    summary.textContent = '7 promotion gates — not a single one passed for live capital.';
+    stage.className = 'mission-stage-badge';
+    complete.style.color = '#fca5a5';
+  }
+
+  var html = '';
+  var gates = mission.gates || [];
+  for (var i = 0; i < gates.length; i += 1) {
+    var g = gates[i];
+    var cls = 'gate state-' + String(g.status || 'not_started').replace(/[^a-z_]/g, '_');
+    var pct = Math.max(0, Math.min(100, Number(g.progress || 0)));
+    html += '<li class="' + cls + '">'
+      + '<div class="gate-num"><span class="gate-num-n">#' + g.n + '</span><span>' + pct + '%</span></div>'
+      + '<div class="gate-title">' + escapeHtml(g.label || '') + '</div>'
+      + '<div class="gate-detail">' + escapeHtml(g.detail || '') + '</div>'
+      + '<div class="gate-bar"><span class="gate-bar-fill" style="width:' + pct + '%"></span></div>'
+      + '</li>';
+  }
+  list.innerHTML = html;
+  nextEl.textContent = 'next: ' + (mission.critical_next || 'record M1 sign-off');
+}
+
 function updateState(data) {
   var s = data.state || data;
   renderProfileSpec(s.profile_spec || {});
   renderSteps(s);
+  renderMission(s);
   renderExecAnatomy(s);
   renderNotifications(s.notifications || []);
   renderExecQuality(s);
@@ -1452,6 +1491,42 @@ h1,h2,h3{margin:0;font-weight:700}
 .vitals-title{margin:0;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);display:flex;justify-content:space-between;align-items:baseline}
 .vitals-live{color:#4ade80;font-size:9px;letter-spacing:.14em}
 .vitals-group{margin:2px 0 0;font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;border-bottom:1px solid var(--border);padding-bottom:4px}
+.mission-panel{padding:14px;margin-top:12px}
+.mission-header{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.mission-stage-badge{font-size:10px;font-weight:800;letter-spacing:.16em;padding:3px 10px;border-radius:6px;border:1px solid #b91c1c;color:#fca5a5;background:#450a0a}
+.gate-rows{list-style:none;display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin:10px 0 0;padding:0}
+.gate{display:flex;flex-direction:column;gap:4px;padding:8px 8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.gate-num{font-size:10px;color:var(--muted);display:flex;align-items:baseline;justify-content:space-between}
+.gate-num-n{font-size:14px;font-weight:800;letter-spacing:.06em;color:var(--text)}
+.gate-title{font-size:10px;font-weight:700;letter-spacing:.04em;color:var(--muted);text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gate-detail{font-size:10px;color:var(--text);line-height:1.35}
+.gate-bar{height:4px;border-radius:99px;overflow:hidden;background:#1f2937}
+.gate-bar-fill{display:block;height:100%;width:0%;background:var(--green);transition:width .35s ease}
+.gate.state-passed{border-color:#166534;background:#052e1c}
+.gate.state-passed .gate-num-n{color:#4ade80}
+.gate.state-passed .gate-bar-fill{background:#22c55e}
+.gate.state-in_progress .gate-num-n{color:#fcd34d}
+.gate.state-in_progress .gate-bar-fill{background:#fbbf24}
+.gate.state-partial .gate-num-n{color:#fbbf24}
+.gate.state-partial .gate-bar-fill{background:#f59e0b}
+.gate.state-synthetic_only{border-color:#713f12}
+.gate.state-synthetic_only .gate-num-n{color:#fbbf24}
+.gate.state-synthetic_only .gate-bar-fill{background:#f59e0b}
+.gate.state-insufficient_data{border-color:#164e63}
+.gate.state-insufficient_data .gate-num-n{color:#67e8f9}
+.gate.state-insufficient_data .gate-bar-fill{background:#22d3ee}
+.gate.state-unproven{border-color:#164e63}
+.gate.state-unproven .gate-num-n{color:#67e8f9}
+.gate.state-unproven .gate-bar-fill{background:#164e63}
+.gate.state-failing{border-color:#7f1d1d;background:#1f0404}
+.gate.state-failing .gate-num-n{color:#ef4444}
+.gate.state-failing .gate-bar-fill{background:#ef4444}
+.gate.state-not_started{border-color:#334155}
+.gate.state-blocked{border-color:#7f1d1d;background:#1f0404}
+.gate.state-blocked .gate-num-n{color:#fca5a5}
+.mission-footer{display:flex;justify-content:space-between;align-items:center;margin-top:8px;border-top:1px solid var(--border);padding-top:8px}
+.mission-complete{font-size:11px;font-weight:800;letter-spacing:.14em;color:#fca5a5}
+.eq-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .eq-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px}
 .eq-label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
 .eq-value{color:var(--text);font-weight:600;text-align:right}
@@ -1811,6 +1886,16 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
       <dt>You forgo</dt><dd id="profileForgoSummary"></dd>
     </dl>
   </div>
+</section>
+
+<section class="panel mission-panel" id="missionPanel">
+  <div class="mission-header">
+    <h2 class="panel-title">Mission — Demo to Live</h2>
+    <span id="missionStage" class="mission-stage-badge">DEMO</span>
+  </div>
+  <p class="panel-subtitle" id="missionSummary">7 promotion gates — not a single one passed for live capital.</p>
+  <ol class="gate-rows" id="missionGateList"></ol>
+  <div class="mission-footer"><span id="missionNext" class="muted">next: ...</span><span id="missionComplete" class="mission-complete">0/7</span></div>
 </section>
 
 <section class="panel agent-steps" id="agentStepsPanel">

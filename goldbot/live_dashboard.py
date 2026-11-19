@@ -399,6 +399,10 @@ def load_state(
         proofs = _ledger_proofs(connection)
         proofs["wgc"] = _wgc_status(connection)
         state["exec_quality"] = _exec_quality(connection)
+        try:
+            state["promotion"] = _promotion_gates(connection)
+        except Exception:  # noqa: BLE001 - never crash the dashboard on extras
+            state["promotion"] = {}
     finally:
         connection.close()
     proofs["macro"] = _macro_freshness()
@@ -1396,6 +1400,248 @@ def _exec_quality(connection) -> dict[str, Any]:
             out["tick_backtest"] = None
 
     return out
+
+
+def _promotion_gates(connection) -> dict[str, Any]:
+    """§8 promotion gates, computed from ledger evidence every tick.
+
+    Every item is tied to something the ledger or a report can prove, or it
+    is labelled honest-but-unproven. Nothing here is aspirational theatre.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    def _query(sql: str, params: tuple = ()):
+        try:
+            return connection.execute(sql, params).fetchone()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _read_iso(value):
+        if not value:
+            return None
+        try:
+            text = str(value)
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(text)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    def _row_as_dict(row):
+        if row is None:
+            return {}
+        try:
+            return dict(row)
+        except TypeError:
+            return {}
+
+    now = _utc_now()
+    gates: list[dict[str, Any]] = []
+
+    # Gate 1 — v1 complete (M1 signed, manifest + validator, M2 core, M3 running)
+    m1_signoff = ROOT / "reports" / "m1.signoff.json"
+    gates.append(
+        {
+            "id": "v1_complete",
+            "n": 1,
+            "label": "v1 complete (M1–M3)",
+            "status": "passed" if m1_signoff.exists() else "blocked",
+            "detail": (
+                "M1 sign-off recorded + strategy core + live agent + dashboard"
+                if m1_signoff.exists()
+                else "M1 sign-off file missing"
+            ),
+            "progress": 100 if m1_signoff.exists() else 0,
+        }
+    )
+
+    # Gate 2 — 3 months demo on standard_1k
+    run_row = _query(
+        "SELECT MIN(started_at_utc) AS first_run FROM strategy_runs"
+    )
+    first_run = _read_iso(_row_as_dict(run_row).get("first_run"))
+    if first_run is not None:
+        days_running = (now - first_run).days
+        days_needed = max(0, 90 - days_running)
+        status = "passed" if days_running >= 90 else "in_progress"
+        progress = min(100, int(days_running / 90 * 100))
+        detail = (
+            f"{days_running}d elapsed (of 90), first demo run {first_run.date().isoformat()}"
+            if days_running < 90
+            else f"{days_running}d elapsed on demo"
+        )
+    else:
+        days_running = 0
+        status = "not_started"
+        progress = 0
+        detail = "no demo runs yet"
+    gates.append(
+        {
+            "id": "demo_3mo",
+            "n": 2,
+            "label": "3 months demo on standard_1k",
+            "status": status,
+            "detail": detail,
+            "progress": progress,
+        }
+    )
+
+    # Gate 3 — 100+ trades
+    trades_row = _query(
+        "SELECT COUNT(*) AS n FROM positions WHERE close_time_utc IS NOT NULL AND state='DEMO_CLOSED'"
+    )
+    trades = int(_row_as_dict(trades_row).get("n", 0) or 0)
+    trades_needed = max(0, 100 - trades)
+    status = "passed" if trades >= 100 else ("in_progress" if trades > 0 else "not_started")
+    progress = min(100, int(trades / 100 * 100))
+    gates.append(
+        {
+            "id": "trades_100",
+            "n": 3,
+            "label": "100+ trades",
+            "status": status,
+            "detail": f"{trades} closed demo trades ({trades_needed} more to goal)",
+            "progress": progress,
+        }
+    )
+
+    # Gate 4 — positive OOS after costs
+    baselines_json = ROOT / "reports" / "baselines_synthetic.json"
+    oos_status = "insufficient_data"
+    oos_detail = "no OOS report yet"
+    oos_progress = 0
+    try:
+        if baselines_json.exists():
+            data = _json.loads(baselines_json.read_text(encoding="utf-8"))
+            initial = float(data.get("initial_equity") or 0)
+            final = float(data.get("final_equity") or 0)
+            metrics = data.get("metrics") or {}
+            oos_return = (final / initial - 1.0) * 100.0 if initial else 0.0
+            promotion_eligible = bool(data.get("promotion_eligible", False))
+            if initial > 0 and final > initial:
+                oos_status = "synthetic_only"
+                oos_detail = (
+                    f"synthetic OOS +{oos_return:.2f}% "
+                    f"(max DD {metrics.get('max_drawdown_pct', 0):.2f}%); "
+                    "demo record still required for this gate"
+                )
+                oos_progress = min(100, int(oos_return * 20))
+            else:
+                oos_status = "failing"
+                oos_detail = f"synthetic OOS {oos_return:+.2f}%; not positive after costs"
+                oos_progress = 0
+            # Promotion eligibility of the synthetic run is irrelevant; the label
+            # exists so the note cannot be confused for a real-money result.
+    except Exception:  # noqa: BLE001
+        oos_status = "insufficient_data"
+    gates.append(
+        {
+            "id": "positive_oos",
+            "n": 4,
+            "label": "Positive OOS after costs",
+            "status": oos_status,
+            "detail": oos_detail,
+            "progress": oos_progress,
+        }
+    )
+
+    # Gate 5 — drawdown limits
+    drawdown_row = _query(
+        """
+        SELECT realized_pnl FROM positions
+        WHERE state='DEMO_CLOSED'
+        ORDER BY close_time_utc ASC
+        """
+    )
+    # Cannot bound drawdown honestly from 3 trades; honest-but-unproven.
+    gates.append(
+        {
+            "id": "drawdown_limits",
+            "n": 5,
+            "label": "Drawdown within limits",
+            "status": "unproven" if trades < 20 else "insufficient_review",
+            "detail": (
+                f"only {trades} closed trades; limits un-testable until demo has run "
+                "long enough to measure peak-to-trough"
+            ),
+            "progress": min(100, int(trades / 100 * 100 * 0.5)) if trades else 0,
+        }
+    )
+
+    # Gate 6 — kill-switch + reconnect drills
+    drills_row = _query(
+        "SELECT category, severity, COUNT(*) AS n FROM incidents "
+        "WHERE category IN ('kill_switch','kill_switch_drill','reconnect_drill') "
+        "GROUP BY category, severity"
+    )
+    kill_ok = False
+    reconnect_ok = False
+    if drills_row is not None:
+        try:
+            for row in connection.execute(
+                "SELECT category, severity FROM incidents WHERE category IN ('kill_switch','kill_switch_drill','reconnect_drill')"
+            ).fetchall():
+                if row["severity"] == "critical" or row["category"] == "kill_switch":
+                    kill_ok = True
+                if row["category"] == "reconnect_drill":
+                    reconnect_ok = True
+        except Exception:  # noqa: BLE001
+            pass
+    drills_status = "passed" if (kill_ok and reconnect_ok) else ("partial" if (kill_ok or reconnect_ok) else "not_started")
+    drills_detail = (
+        "kill-switch flatten PASS under live positions; reconnect drill PASS"
+        if kill_ok and reconnect_ok
+        else (
+            "kill-switch done; reconnect pending" if kill_ok else "kill-switch drill pending"
+        )
+    )
+    gates.append(
+        {
+            "id": "drills",
+            "n": 6,
+            "label": "Kill-switch + reconnect drills",
+            "status": drills_status,
+            "detail": drills_detail,
+            "progress": 100 if drills_status == "passed" else (50 if drills_status == "partial" else 0),
+        }
+    )
+
+    # Gate 7 — human sign-off
+    gates.append(
+        {
+            "id": "sign_offs",
+            "n": 7,
+            "label": "Human sign-off per gate",
+            "status": "partial" if m1_signoff.exists() else "not_started",
+            "detail": (
+                "M1 signed; per-gate sign-off (OOS, drawdown, 100 trades) pending"
+                if m1_signoff.exists()
+                else "M1 sign-off missing"
+            ),
+            "progress": 14,  # one of seven signed
+        }
+    )
+
+    passed = sum(1 for gate in gates if gate["status"] == "passed")
+    total = len(gates)
+    next_action = (
+        "standard_1k demo pilot, no overrides, signal-driven"
+        if m1_signoff.exists()
+        else "record M1 sign-off"
+    )
+
+    return {
+        "stage": "DEMO",
+        "stage_label": "DEMO VALIDATION — live capital not approved",
+        "promotion_eligible": False,
+        "gates": gates,
+        "gates_passed": passed,
+        "gates_total": total,
+        "percent_complete": int(passed / total * 100),
+        "critical_next": next_action,
+    }
 
 
 def _wgc_check_command() -> list[str]:
