@@ -1926,13 +1926,7 @@ h1,h2,h3{margin:0;font-weight:700}
 .panel-subtitle{margin:0 0 8px;color:var(--muted);font-size:11px}
 .node-grid{position:relative;display:grid;gap:8px;padding-left:14px}
 .pipeline-svg{position:absolute;left:1px;top:4px;width:4px;height:calc(100% - 8px);pointer-events:none;opacity:.95}
-.pipeline-packet{position:absolute;left:-1px;top:0;width:8px;height:8px;border-radius:50%;background:#22d3ee;box-shadow:0 0 8px #22d3ee,0 0 18px rgba(34,211,238,.65);animation:packetFall 4.2s linear infinite}
-.pipeline-packet.p1{animation-delay:0s;background:#22d3ee;box-shadow:0 0 8px #22d3ee,0 0 18px rgba(34,211,238,.65)}
-.pipeline-packet.p2{animation-delay:-1.6s;background:#a855f7;box-shadow:0 0 8px #a855f7,0 0 18px rgba(168,85,247,.65)}
-.pipeline-packet.p3{animation-delay:-2.9s;background:#fbbf24;box-shadow:0 0 8px #fbbf24,0 0 18px rgba(251,191,36,.65)}
-.node-panel-offline .pipeline-packet{display:none}
 .node-panel-offline .pipeline-svg{opacity:.35}
-@keyframes packetFall{from{transform:translateY(0)}to{transform:translateY(440px)}}
 .node-conflict{border-color:#713f12;box-shadow:0 0 12px rgba(251,191,36,.4);animation:conflictFlash 1.1s ease-in-out infinite}
 @keyframes conflictFlash{0%,100%{box-shadow:0 0 10px rgba(251,191,36,.25)}50%{box-shadow:0 0 22px rgba(251,191,36,.65)}}
 .node{border:1px solid var(--border);border-radius:10px;padding:8px;background:var(--surface)}
@@ -2115,7 +2109,7 @@ h1,h2,h3{margin:0;font-weight:700}
 .muted{color:var(--muted)}
 @media (max-width:1100px){.layout{grid-template-columns:1fr}.node-grid{grid-template-columns:repeat(2,1fr)}.opportunity-body{grid-template-columns:1fr}}
 @media (prefers-reduced-motion: reduce){.manager-ring-inner,.running .manager-ring-outer{animation:none}}
-@media (prefers-reduced-motion: reduce){.orb-ring,.orb-gloss,.pipeline-packet,.line,.bell-btn.bell-shake,.anatomy-blocker.block .anatomy-value,.live-trades-card.positions-open .exit-trade-btn,.node-conflict,.btn-execute.accept-ready{animation:none !important}.manager-orb-wrap{transition:none}.pipeline-packet,.line{opacity:1 !important;transform:none !important}.anatomy-fill,.anatomy-center-fill{transition:none}}
+@media (prefers-reduced-motion: reduce){.orb-ring,.orb-gloss,.line,.bell-btn.bell-shake,.anatomy-blocker.block .anatomy-value,.live-trades-card.positions-open .exit-trade-btn,.node-conflict,.btn-execute.accept-ready{animation:none !important}.manager-orb-wrap{transition:none}.line{opacity:1 !important;transform:none !important}.anatomy-fill,.anatomy-center-fill{transition:none}}
 .feedback-section{margin:16px 0;padding:18px}
 .feedback-page{max-width:1500px;margin:0 auto;padding:0 16px}
 .feedback-page .feedback-section{margin-top:12px}
@@ -2313,10 +2307,7 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
           </linearGradient>
         </defs>
       </svg>
-      <div class="pipeline-packet p1" data-node="mt5"></div>
-      <div class="pipeline-packet p2" data-node="fundamental"></div>
-      <div class="pipeline-packet p3" data-node="fusion"></div>
-      {_card("mt5", "MT5 XAUUSD", "Price + Execution Venue", '<div class="kv"><span>Feed</span><span id="kvMt5">…</span></div><div class="kv"><span>Bars</span><span>M15 / H4</span></div>', "cyan")}
+                        {_card("mt5", "MT5 XAUUSD", "Price + Execution Venue", '<div class="kv"><span>Feed</span><span id="kvMt5">…</span></div><div class="kv"><span>Bars</span><span>M15 / H4</span></div>', "cyan")}
       {_card("fundamental", "Fundamental Agent", "What to consider", '<div class="kv"><span>Score</span><span id="kvFundScore">…</span></div><div class="kv"><span>Stale</span><span id="kvFundStale">…</span></div>', "cyan")}
       {_card("technical", "Technical Agent", "When to act", '<div class="kv"><span>Score</span><span id="kvTechScore">…</span></div><div class="kv"><span>ATR</span><span id="kvTechAtr">…</span></div>', "cyan")}
       {_card("fusion", "Fusion Engine", "Both-layer agreement", '<div class="kv"><span>Score</span><span id="kvFusionScore">…</span></div><div class="kv"><span>Entry</span><span id="kvFusionEntry">…</span></div>', "amber")}
