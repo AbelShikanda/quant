@@ -684,7 +684,13 @@ function renderMission(s) {
     complete.style.color = '#fca5a5';
   }
 
-  var gates = mission.gates || [];
+  var gates = (mission.gates || []).slice();
+  // Sort completed → least complete; stable tiebreak by gate number (1..7)
+  gates.sort(function (a, b) {
+    var dp = (Number(b.progress) || 0) - (Number(a.progress) || 0);
+    if (dp !== 0) { return dp; }
+    return (Number(a.n) || 0) - (Number(b.n) || 0);
+  });
   var totalProgress = 0;
   var html = '';
   for (var i = 0; i < gates.length; i += 1) {
@@ -702,7 +708,7 @@ function renderMission(s) {
     var isOpen = !!window._missionGateOpen && window._missionGateOpen[key] === true;
     var gateCls = 'gate state-' + status + (isOpen ? ' open' : '');
     html += '<li class="' + gateCls + '" data-gate="' + escapeHtml(key) + '">'
-      + '<button class="gate-head" type="button" aria-expanded="' + (isOpen ? 'true' : 'false') + '" aria-controls="gate-detail-' + i + '">'
+      + '<button class="gate-head" type="button" aria-expanded="' + (isOpen ? 'true' : 'false') + '" aria-controls="gate-detail-' + escapeHtml(key) + '">'
       + '<span class="gate-head-left">'
       + '<span class="gate-num-n">#' + g.n + '</span>'
       + '<span class="gate-title-block">'
@@ -716,7 +722,7 @@ function renderMission(s) {
       + '</span>'
       + '</button>'
       + '<div class="gate-bar"><span class="gate-bar-fill" style="width:' + pct + '%"></span></div>'
-      + '<div class="gate-body" id="gate-detail-' + i + '" role="region" aria-label="' + escapeHtml(g.label || '') + ' details">'
+      + '<div class="gate-body" id="gate-detail-' + escapeHtml(key) + '" role="region" aria-label="' + escapeHtml(g.label || '') + ' details">'
       + '<dl class="gate-metrics">' + metricsHtml + '</dl>'
       + '</div>'
       + '</li>';
