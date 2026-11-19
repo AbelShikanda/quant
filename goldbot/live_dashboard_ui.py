@@ -1567,18 +1567,53 @@ byId('confirmExecuteBtn').addEventListener('click', function () {
     updateState({ v: 1, state: JSON.parse(byId('appState').getAttribute('data-state')) });
   });
 });
-byId('copyLogsBtn').addEventListener('click', function () {
-  var text = byId('terminal').innerText || '';
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text);
-    return;
-  }
+function fallbackCopyText(text, done) {
   var area = document.createElement('textarea');
   area.value = text;
   document.body.appendChild(area);
   area.select();
-  try { document.execCommand('copy'); } catch (e) {}
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
   document.body.removeChild(area);
+  done(ok);
+}
+
+function flashCopyButton(label, ok) {
+  var btn = byId('copyLogsBtn');
+  if (!btn) { return; }
+  if (btn._resetTimer) { clearTimeout(btn._resetTimer); }
+  btn.textContent = label;
+  btn.className = 'btn btn-ghost' + (ok ? ' copy-ok' : ' copy-fail');
+  btn._resetTimer = setTimeout(function () {
+    btn.textContent = 'Copy logs';
+    btn.className = 'btn btn-ghost';
+  }, 2000);
+}
+
+byId('copyLogsBtn').addEventListener('click', function () {
+  var text = byId('terminal').innerText || '';
+  var lines = text.split('\n').filter(function (line) { return line.trim() !== ''; }).length;
+  if (!lines) {
+    flashCopyButton('Nothing to copy', false);
+    toast('Agent terminal is empty - start the agent first.');
+    return;
+  }
+  var done = function (ok) {
+    if (ok) {
+      flashCopyButton('\u2713 Copied', true);
+      toast('Copied ' + lines + ' log line' + (lines === 1 ? '' : 's') + ' to clipboard.');
+    } else {
+      flashCopyButton('Copy failed', false);
+      toast('Copy failed - select the terminal text manually.');
+    }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done(true); }, function () {
+      fallbackCopyText(text, done);
+    });
+    return;
+  }
+  fallbackCopyText(text, done);
 });
 
 function connectStream() {
@@ -2285,6 +2320,8 @@ h1,h2,h3{margin:0;font-weight:700}
 #terminal{background:#050505;border:1px solid var(--border);border-radius:10px;color:#a3e635;font-family:'Cascadia Code',Consolas,monospace;font-size:11px;line-height:1.45;overflow:auto;flex:1;min-height:220px;padding:10px;white-space:pre-wrap}
 .line-error{color:#f87171}.line-warn{color:#fbbf24}.line-info{color:#cbd5e1}
 .terminal-footer{display:flex;justify-content:space-between;align-items:center}
+.btn.copy-ok{border-color:#166534;color:#4ade80}
+.btn.copy-fail{border-color:#7f1d1d;color:#fca5a5}
 .pill{display:inline-block;margin:2px 2px;padding:2px 6px;background:#111;border:1px solid var(--border);border-radius:6px;font-size:10px}
 .btn{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:#111;color:var(--text);font-weight:600;cursor:pointer;transition:all .15s ease;text-decoration:none}
 .btn:hover{border-color:#334155;background:#161616}
