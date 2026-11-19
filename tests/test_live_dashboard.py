@@ -85,6 +85,7 @@ def _market() -> dict:
             "kill_switch": False,
         },
         "spread": 0.2,
+        "symbol_tick": {"bid": 4114.1, "ask": 4114.3, "time": 1737316800},
     }
 
 
@@ -218,6 +219,45 @@ def test_load_state_reads_live_demo_run(tmp_path: Path) -> None:
     assert state["stale"] is False
     assert state["last_activity_age_seconds"] == 5
     assert state["errors"] == []
+
+
+def test_load_state_reports_upstream_heartbeat(tmp_path: Path) -> None:
+    path = tmp_path / "upstream.sqlite"
+    started = _populate_ledger(path, finished=False, mode="demo_live")
+    running_agent = {
+        "running": True,
+        "started_at_utc": started.isoformat(),
+        "log_lines": 0,
+    }
+
+    state = load_state(
+        path,
+        max_rows=5,
+        now=started + timedelta(seconds=5),
+        agent_status=running_agent,
+    )
+    upstream = state["upstream"]
+    assert upstream["state"] == "live"
+    assert upstream["age_seconds"] == 5
+    assert upstream["last_write_utc"] is not None
+    assert upstream["seq"]
+    assert upstream["bid"] == pytest.approx(4114.1)
+    assert upstream["ask"] == pytest.approx(4114.3)
+
+    state_stale = load_state(
+        path,
+        max_rows=5,
+        now=started + timedelta(seconds=3601),
+        agent_status=running_agent,
+    )
+    assert state_stale["upstream"]["state"] == "stale"
+
+    state_idle = load_state(
+        path,
+        max_rows=5,
+        now=started + timedelta(seconds=5),
+    )
+    assert state_idle["upstream"]["state"] == "idle"
 
 
 def test_load_state_marks_completed_paper_run_not_stale(tmp_path: Path) -> None:

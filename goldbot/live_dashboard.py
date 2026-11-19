@@ -41,6 +41,7 @@ DEFAULT_PORT = 8010
 DEFAULT_REFRESH_SECONDS = 2.0
 DEFAULT_MAX_ROWS = 25
 DEFAULT_STALE_AFTER_SECONDS = 60.0
+UPSTREAM_STALE_AFTER_SECONDS = 60.0
 DEFAULT_BARS = 1600
 DEFAULT_CONTEXT_BARS = 500
 DEFAULT_INTERVAL_SECONDS = 15.0
@@ -312,6 +313,8 @@ def load_state(
         return state
 
     errors: list[str] = []
+    counts: dict[str, int | None] = {}
+    upstream_last_write: datetime | None = None
     try:
         latest_run, error = _one(
             connection,
@@ -379,8 +382,21 @@ def load_state(
             (200,),
         )
         _add_error(errors, error)
+        bars_write_row, error = _one(
+            connection,
+            "SELECT MAX(recorded_at_utc) AS ts FROM chart_bars",
+        )
+        _add_error(errors, error)
+        if bars_write_row:
+            upstream_last_write = _parse_dt(bars_write_row.get("ts"))
+        for _value in (
+            (orders[0].get("submitted_at_utc") if orders else None),
+            (fills[0].get("filled_at_utc") if fills else None),
+        ):
+            _candidate = _parse_dt(_value)
+            if _candidate and (upstream_last_write is None or _candidate > upstream_last_write):
+                upstream_last_write = _candidate
 
-        counts: dict[str, int | None] = {}
         for table in (
             "strategy_runs",
             "strategy_decisions",
@@ -407,6 +423,34 @@ def load_state(
         connection.close()
     proofs["macro"] = _macro_freshness()
     state["proofs"] = proofs
+
+    agent_block = state.get("agent") or {}
+    agent_running = bool(agent_block.get("running"))
+    upstream_age = (
+        max(0.0, (generated_at - upstream_last_write).total_seconds())
+        if upstream_last_write is not None
+        else None
+    )
+    if not agent_running:
+        upstream_state = "idle"
+    elif upstream_age is not None and upstream_age <= UPSTREAM_STALE_AFTER_SECONDS:
+        upstream_state = "live"
+    else:
+        upstream_state = "stale"
+    _snap_market = _json_dict(latest_snapshot.get("market_json")) if latest_snapshot else {}
+    tick_raw = _snap_market.get("symbol_tick") if isinstance(_snap_market, dict) else {}
+    upstream = {
+        "state": upstream_state,
+        "last_write_utc": upstream_last_write.isoformat() if upstream_last_write else None,
+        "age_seconds": upstream_age,
+        "bid": _as_float(tick_raw.get("bid")) if isinstance(tick_raw, dict) else None,
+        "ask": _as_float(tick_raw.get("ask")) if isinstance(tick_raw, dict) else None,
+        "seq": (
+            f"{upstream_last_write.isoformat() if upstream_last_write else 'none'}"
+            f"|{counts.get('orders') or 0}/{counts.get('fills') or 0}"
+            f"/{counts.get('incidents') or 0}"
+        ),
+    }
 
     run_summary = _json_dict(latest_run.get("summary_json")) if latest_run else {}
     account_trade_mode = run_summary.get("account_trade_mode")
@@ -597,6 +641,7 @@ def load_state(
                 else "Ledger is readable but has no strategy runs yet."
             ),
             "chart_bars": latest_bars,
+            "upstream": upstream,
             "equity_curve": equity_curve,
             "mt5": {"status": mt5_status, "detail": mt5_detail},
             "fundamentals": {

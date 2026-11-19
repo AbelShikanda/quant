@@ -505,19 +505,6 @@ function renderExecAnatomy(s) {
     stamp.textContent = last.as_of_utc ? 'as of ' + String(last.as_of_utc).slice(11, 16) + 'Z' : '';
   }
 
-  var wrap = byId('managerOrbWrap');
-  if (wrap) {
-    wrap.addEventListener('pointermove', function (ev) {
-      var rect = wrap.getBoundingClientRect();
-      var x = (ev.clientX - rect.left) / rect.width - 0.5;
-      var y = (ev.clientY - rect.top) / rect.height - 0.5;
-      wrap.style.transform = 'rotateY(' + (x * 16).toFixed(2) + 'deg) rotateX(' + (-y * 14).toFixed(2) + 'deg)';
-    });
-    wrap.addEventListener('pointerleave', function () {
-      wrap.style.transform = 'rotateY(0deg) rotateX(0deg)';
-    });
-  }
-
   var card = byId('managerCard');
   if (card) {
     var decisionType = (s.latest_decision || {}).decision_type || 'unknown';
@@ -526,7 +513,8 @@ function renderExecAnatomy(s) {
       : es.halt_flag ? 'state-halt'
       : decisionType === 'NO_TRADE' ? 'state-notrade'
       : 'state-idle';
-    card.className = 'manager-card ' + state + (running ? ' running' : '');
+    var upstreamState = (s.upstream && s.upstream.state) || 'idle';
+    card.className = 'manager-card ' + state + (running ? ' running' : '') + ' upstream-' + upstreamState;
     var combined = fusion.combined_score == null ? 0 : fusion.combined_score;
     var magnitude = Math.min(1, Math.abs(combined));
     var duration = Math.max(8, Math.round(26 - magnitude * 18));
@@ -805,12 +793,150 @@ function wireProfileToggle() {
   });
 }
 
+function orbToast(text, tone) {
+  if (!text) { return; }
+  var seen = window._orbToastSeen = window._orbToastSeen || {};
+  if (Object.keys(seen).length > 60) { window._orbToastSeen = seen = {}; }
+  var key = String(text) + '|' + Math.floor(Date.now() / 60000);
+  if (seen[key]) { return; }
+  seen[key] = true;
+  var queue = window._orbToastQueue = window._orbToastQueue || [];
+  queue.push({ text: text, tone: tone || 'mute' });
+  if (queue.length > 3) { queue.shift(); }
+  pumpOrbToast();
+}
+
+function pumpOrbToast() {
+  var el = byId('orbToast');
+  if (!el) { return; }
+  if (window._orbToastUntil && Date.now() < window._orbToastUntil) { return; }
+  var next = (window._orbToastQueue || []).shift();
+  if (!next) { return; }
+  el.textContent = next.text;
+  el.className = 'orb-toast show ' + next.tone;
+  window._orbToastUntil = Date.now() + 6000;
+  window.setTimeout(function () {
+    el.classList.remove('show');
+    window._orbToastUntil = 0;
+    window.setTimeout(pumpOrbToast, 250);
+  }, 6000);
+}
+
+function updateUpstreamLine() {
+  var el = byId('upstreamText');
+  if (!el) { return; }
+  var state = window._upstreamState || 'idle';
+  var age = window._upstreamBase;
+  if (age != null && window._upstreamAt != null) {
+    age = age + (Date.now() - window._upstreamAt) / 1000;
+  }
+  var ageText = age == null ? '-' : (age < 60 ? Math.floor(age) + 's ago' : Math.floor(age / 60) + 'm ago');
+  var bid = window._upstreamBid;
+  var price = (bid != null) ? ' ? XAUUSD ' + Number(bid).toFixed(2) : '';
+  if (state === 'idle') {
+    el.innerHTML = 'agent stopped ? no upstream';
+  } else if (state === 'live') {
+    el.innerHTML = '<strong>live</strong>' + price + ' ? last write ' + ageText;
+  } else {
+    el.innerHTML = '<strong>STALE</strong> ? last write ' + ageText;
+  }
+}
+
+function renderUpstream(s) {
+  var u = s.upstream || {};
+  var dot = byId('upstreamDot');
+  if (!dot) { return; }
+  dot.className = 'up-dot ' + (u.state || 'idle');
+  window._upstreamBase = u.age_seconds;
+  window._upstreamAt = Date.now();
+  window._upstreamState = u.state || 'idle';
+  window._upstreamBid = u.bid;
+  updateUpstreamLine();
+  var seq = u.seq || null;
+  if (window._lastUpstreamSeq != null && seq !== window._lastUpstreamSeq) {
+    window._upstreamFrames = (window._upstreamFrames || 0) + 1;
+    var svg = byId('orbSvg');
+    if (svg) { svg.classList.remove('beat'); void svg.getBoundingClientRect(); svg.classList.add('beat'); }
+  }
+  window._lastUpstreamSeq = seq;
+  var countEl = byId('upstreamCount');
+  if (countEl) { countEl.textContent = (window._upstreamFrames || 0) + ' frames'; }
+}
+
+function diffOrbEvents(prev, s) {
+  if (!prev) { return; }
+  var logs = s.agent_logs || [];
+  var prevLen = (prev.agent_logs || []).length;
+  for (var i = Math.max(prevLen, logs.length - 12); i < logs.length; i += 1) {
+    var line = String(logs[i] || '');
+    if (/ERROR|WARN/i.test(line)) {
+      orbToast(line.length > 96 ? line.slice(0, 93) + '...' : line, /ERROR/i.test(line) ? 'error' : 'warn');
+      break;
+    }
+  }
+  var pd = prev.latest_decision || {};
+  var d = s.latest_decision || {};
+  if (d.as_of_utc && d.as_of_utc !== pd.as_of_utc) {
+    var score = d.combined_score != null ? ' ? score ' + fmtScore(d.combined_score) : '';
+    orbToast('new decision: ' + (d.decision_type || '?') + score, d.decision_type === 'ENTER_LONG' ? 'good' : 'mute');
+  } else if (d.decision_type && pd.decision_type && d.decision_type !== pd.decision_type) {
+    orbToast('decision ' + pd.decision_type + ' -> ' + d.decision_type, d.decision_type === 'ENTER_LONG' ? 'good' : 'warn');
+  }
+  var po = (prev.orders || [])[0] || {};
+  var o = (s.orders || [])[0] || {};
+  if (o.order_id && (o.order_id !== po.order_id || o.state !== po.state)) {
+    orbToast('order ' + o.order_id + ' ? ' + (o.side || '') + ' ' + (o.volume != null ? o.volume : '') + ' @ ' + (o.price != null ? o.price : '-') + ' ? ' + (o.state || ''), 'good');
+  }
+  var pf = (prev.fills || [])[0] || {};
+  var f = (s.fills || [])[0] || {};
+  if (f.fill_id && (f.fill_id !== pf.fill_id || f.price !== pf.price)) {
+    orbToast('fill ' + f.fill_id + ' ? @ ' + (f.price != null ? f.price : '-'), 'good');
+  }
+  var pe = (prev.exec_quality || {}).halt_flag;
+  var e = (s.exec_quality || {}).halt_flag;
+  if (!pe && e) { orbToast('KILL SWITCH armed - bot halted', 'error'); }
+  var pu = (prev.upstream || {}).state;
+  var u2 = (s.upstream || {}).state;
+  if (pu && u2 && pu !== u2) {
+    if (u2 === 'stale') { orbToast('UPSTREAM LOST - no ledger writes', 'warn'); }
+    else if (u2 === 'live') { orbToast('UPSTREAM RESTORED', 'good'); }
+    else if (u2 === 'idle') { orbToast('agent stopped', 'mute'); }
+  }
+}
+
+function wireOrbTilt() {
+  var wrap = byId('managerOrbWrap');
+  if (!wrap) { return; }
+  var reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  if (reduceMotion) { return; }
+  var card = byId('managerCard');
+  wrap.addEventListener('pointermove', function (ev) {
+    var rect = wrap.getBoundingClientRect();
+    var x = (ev.clientX - rect.left) / rect.width - 0.5;
+    var y = (ev.clientY - rect.top) / rect.height - 0.5;
+    wrap.style.transition = 'transform .08s ease';
+    wrap.style.transform = 'rotateY(' + (x * 26).toFixed(2) + 'deg) rotateX(' + (-y * 22).toFixed(2) + 'deg) translateZ(18px)';
+  });
+  wrap.addEventListener('pointerenter', function () {
+    if (card) { card.classList.add('orb-hover'); }
+  });
+  wrap.addEventListener('pointerleave', function () {
+    wrap.style.transition = 'transform .45s cubic-bezier(.2,.9,.3,1.18)';
+    wrap.style.transform = 'rotateY(0deg) rotateX(0deg) translateZ(0)';
+    if (card) { card.classList.remove('orb-hover'); }
+  });
+}
+
 function updateState(data) {
   var s = data.state || data;
+  var previousRenderState = window._prevRenderState;
+  window._prevRenderState = s;
   renderProfileSpec(s.profile_spec || {});
   renderSteps(s);
   renderMission(s);
   renderExecAnatomy(s);
+  renderUpstream(s);
+  diffOrbEvents(previousRenderState, s);
   renderNotifications(s.notifications || []);
   renderExecQuality(s);
   renderLiveTrades(s);
@@ -1306,6 +1432,8 @@ function fallbackPoll() {
 }
 wireMissionToggle();
 wireProfileToggle();
+wireOrbTilt();
+window.setInterval(updateUpstreamLine, 1000);
 connectStream();
 """
 
@@ -1820,6 +1948,29 @@ h1,h2,h3{margin:0;font-weight:700}
 .node-fail{border-color:#7f1d1d;box-shadow:0 0 14px rgba(239,68,68,.22)}
 .node-wait{border-color:#713f12;box-shadow:0 0 14px rgba(251,191,36,.22)}
 .center{display:flex;flex-direction:column;gap:12px}
+.manager-orb-svg{transform-origin:50% 50%;transition:filter .25s ease}
+.manager-orb-svg.beat{animation:orbBeat .55s cubic-bezier(.2,.9,.3,1.15)}
+@keyframes orbBeat{0%{transform:scale(1)}35%{transform:scale(1.055)}100%{transform:scale(1)}}
+.manager-orb-svg.beat .orb-body{filter:brightness(1.45)}
+.manager-orb-svg.beat .orb-gloss{opacity:.85}
+.upstream-stale .orb-ring,.upstream-idle .orb-ring{animation-play-state:paused !important}
+.upstream-stale .manager-orb-svg,.upstream-idle .manager-orb-svg{filter:saturate(.45);opacity:.72}
+.orb-hover .manager-orb-svg{filter:saturate(1.28) brightness(1.13)}
+.upstream-line{display:flex;align-items:center;justify-content:center;gap:8px;margin:-2px 0 2px}
+.up-dot{width:8px;height:8px;border-radius:50%;background:#475569;flex:0 0 auto}
+.up-dot.live{background:#22c55e;box-shadow:0 0 8px rgba(34,197,94,.75)}
+.up-dot.stale{background:#f59e0b;box-shadow:0 0 8px rgba(245,158,11,.7)}
+.up-dot.idle{background:#475569}
+.up-text{font-size:10px;letter-spacing:.03em;color:var(--muted)}
+.up-text strong{color:var(--text)}
+.up-count{font-size:9px;color:var(--muted)}
+.orb-toast{position:absolute;top:2px;left:50%;transform:translate(-50%,-10px);z-index:6;max-width:92%;background:rgba(6,10,14,.92);border:1px solid #22d3ee;border-radius:9px;padding:6px 10px;font-size:10px;line-height:1.4;letter-spacing:.02em;color:#e2f5ff;opacity:0;pointer-events:none;transition:opacity .18s ease,transform .18s ease;text-align:left}
+.orb-toast.show{opacity:1;transform:translate(-50%,0)}
+.orb-toast.warn{border-color:#f59e0b;color:#fde68a}
+.orb-toast.error{border-color:#ef4444;color:#fecaca}
+.orb-toast.good{border-color:#22c55e;color:#bbf7d0}
+.orb-toast.mute{border-color:#475569;color:#cbd5e1}
+@media (prefers-reduced-motion: reduce){.manager-orb-svg.beat{animation:none !important}.manager-orb-svg.beat .orb-body{filter:brightness(1.35)}}
 .manager-card{position:relative;display:flex;flex-direction:column;align-items:center;gap:10px;min-height:280px;border-radius:14px;background:linear-gradient(180deg,#161616,#0a0a0a);border:1px solid var(--border);overflow:hidden;text-align:center;perspective:720px;padding:14px}
 .manager-orb-wrap{position:relative;width:230px;height:230px;transform-style:preserve-3d;transition:transform .18s ease}
 .manager-orb-svg{position:absolute;inset:0;overflow:visible}
@@ -2195,8 +2346,9 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
 
   <section class="center">
     <div class="manager-card" id="managerCard">
+      <div class="orb-toast" id="orbToast" role="status" aria-live="polite"></div>
       <div class="manager-orb-wrap" id="managerOrbWrap" role="status" aria-label="current manager decision">
-        <svg class="manager-orb-svg" viewBox="0 0 230 230" width="230" height="230" aria-hidden="true">
+        <svg class="manager-orb-svg" id="orbSvg" viewBox="0 0 230 230" width="230" height="230" aria-hidden="true">
           <defs>
             <radialGradient id="orbCore" cx="42%" cy="38%" r="62%">
               <stop offset="0%" stop-color="#fdf4ff"/>
@@ -2222,6 +2374,7 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
         </div>
       </div>
 
+      <div class="upstream-line" id="upstreamLine"><span class="up-dot idle" id="upstreamDot"></span><span class="up-text" id="upstreamText">upstream: waiting</span><span class="up-count" id="upstreamCount">0 frames</span></div>
       <div class="anatomy" id="anatomyPanel">
         <div class="anatomy-title-row">
           <h3 class="anatomy-title">Decision anatomy</h3>
