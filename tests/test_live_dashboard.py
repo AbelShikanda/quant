@@ -375,6 +375,27 @@ def test_render_page_is_agentic_and_has_agent_markup(tmp_path: Path) -> None:
     assert 'href="/feedback"' in page
 
 
+def test_copy_logs_reports_success_and_empty_terminal() -> None:
+    page = render_page({}, refresh_seconds=0)
+    assert "flashCopyButton('Nothing to copy', false)" in page
+    assert "flashCopyButton('\\u2713 Copied', true)" in page
+    assert "flashCopyButton('Copy failed', false)" in page
+    assert "toast('Copied ' + lines" in page
+
+
+def test_latest_decisions_are_bounded_and_scrollable() -> None:
+    page = render_page({}, refresh_seconds=0)
+    assert "#latestDecisions{display:flex" in page
+    assert "max-height:132px" in page
+    assert "overflow-y:auto" in page
+    assert "overscroll-behavior:contain" in page
+
+
+def test_position_aggregate_sits_below_positions() -> None:
+    page = render_page({}, refresh_seconds=0)
+    assert page.index('id="recentPositions"') < page.index("Positions · aggregate")
+
+
 def test_feedback_page_renders_form_and_list() -> None:
     from goldbot.live_dashboard_ui import render_feedback_page
 

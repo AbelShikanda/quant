@@ -2712,14 +2712,14 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
     </div>
 
     <div class="panel evidence-grid" id="evidenceGrid">
-      <div class="evidence-item evidence-aggregate">
-        <dt>Positions · aggregate <span class="agg-note" id="aggNote">all ledger rows</span><button class="trace-dl" id="downloadAllTracesBtn" type="button" title="Download every position plus its ledger trace as JSON">Download all</button></dt>
-        <dd id="positionAggregate" class="muted">—</dd>
-      </div>
       <div class="evidence-item"><dt>Latest decisions</dt><dd id="latestDecisions" class="muted">—</dd></div>
       <div class="evidence-item"><dt>Recent orders</dt><dd id="recentOrders" class="muted">—</dd></div>
       <div class="evidence-item"><dt>Positions</dt><dd id="recentPositions" class="muted">—</dd></div>
       <div class="evidence-item"><dt>Equity curve</dt><dd id="equitySummary" class="muted">—</dd></div>
+      <div class="evidence-item evidence-aggregate">
+        <dt>Positions · aggregate <span class="agg-note" id="aggNote">all ledger rows</span><button class="trace-dl" id="downloadAllTracesBtn" type="button" title="Download every position plus its ledger trace as JSON">Download all</button></dt>
+        <dd id="positionAggregate" class="muted">—</dd>
+      </div>
     </div>
   </section>
 
