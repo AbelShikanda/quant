@@ -226,6 +226,24 @@ function renderProfileSpec(spec) {
   byId('profileSpecList').innerHTML = rowsHtml;
   byId('profileSelectSummary').textContent = spec.select_summary || '';
   byId('profileForgoSummary').textContent = spec.forgo_summary || '';
+  var leverage = '';
+  var specRows = spec.spec_rows || [];
+  for (var j = 0; j < specRows.length; j += 1) {
+    if (specRows[j].label === 'Bot leverage cap') { leverage = String(specRows[j].value || ''); break; }
+  }
+  var summary = byId('profileSummary');
+  if (summary) {
+    summary.textContent = spec.key
+      ? (spec.key + (spec.high_risk_override ? ' \u00b7 HIGH RISK \u00b7 not promotion-eligible' : ' \u00b7 promotion-eligible'))
+      : '';
+  }
+  var stage = byId('profileStage');
+  if (stage) {
+    stage.textContent = spec.promotion_eligible ? 'STANDARD' : 'DEMO';
+    stage.className = 'mission-stage-badge ' + (spec.promotion_eligible ? 'profile-stage-green' : 'profile-stage-demo');
+  }
+  var chip = byId('profileRiskChip');
+  if (chip) { chip.textContent = leverage ? ('\u2212' + leverage) : '\u2014'; }
 }
 
 function renderSteps(s) {
@@ -770,6 +788,21 @@ function wireMissionToggle() {
   });
 }
 
+function wireProfileToggle() {
+  var panel = byId('profilePanel');
+  var toggle = byId('profileToggle');
+  if (!panel || !toggle) { return; }
+  toggle.addEventListener('click', function () {
+    var collapsed = panel.className.indexOf('profile-collapsed') !== -1;
+    if (collapsed) {
+      panel.className = panel.className.replace(' profile-collapsed', '');
+    } else {
+      panel.className = panel.className + ' profile-collapsed';
+    }
+    toggle.setAttribute('aria-expanded', collapsed ? 'true' : 'false');
+  });
+}
+
 function updateState(data) {
   var s = data.state || data;
   renderProfileSpec(s.profile_spec || {});
@@ -1243,6 +1276,7 @@ function fallbackPoll() {
   }, REFRESH_MS);
 }
 wireMissionToggle();
+wireProfileToggle();
 connectStream();
 """
 
@@ -1546,7 +1580,23 @@ _CSS = """
 *{box-sizing:border-box} body{margin:0;padding:18px;background:var(--bg);color:var(--text);font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 h1,h2,h3{margin:0;font-weight:700}
 .state-strip{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;position:sticky;top:8px;z-index:5}
-.profile-panel{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:14px;margin-top:12px}
+.top-panel-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;align-items:start}
+.top-panel-row .mission-panel{margin-top:0}
+@media (max-width:1180px){.top-panel-row{grid-template-columns:1fr}}
+.profile-panel{padding:12px;margin-top:0;min-width:0;display:block}
+.profile-collapsed .profile-body{display:none}
+.profile-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;background:transparent;border:none;color:inherit;text-align:left;cursor:pointer;padding:0}
+.profile-toggle:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}
+.profile-toggle-left{display:flex;flex-direction:column;gap:2px;min-width:0}
+.profile-toggle-title{font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--text)}
+.profile-toggle-sub{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.profile-toggle-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.profile-stage-demo{border-color:#92400e;color:#fbbf24;background:#451a03}
+.profile-stage-green{border-color:#166534;color:#4ade80;background:#052e1c}
+.profile-collapsed .mission-caret{transform:rotate(-90deg)}
+.profile-panel:not(.profile-collapsed) .mission-caret{transform:rotate(0)}
+.profile-body{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:14px;min-height:0}
+@media (max-width:760px){.profile-body{grid-template-columns:1fr}}
 .profile-select{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:8px;font-size:13px;width:100%}
 .profile-spec{display:grid;gap:6px}
 .spec-row{display:flex;justify-content:space-between;gap:12px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:11px}
@@ -1976,28 +2026,38 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
 </header>
 
 <div id="overrideBanner" class="banner banner-danger" style="display:none">DEMO OVERRIDE ACTIVE - macro/fusion gates are bypassed. This will place a bare 0.01 XAUUSD demo order if you click Accept &amp; Execute. For testing only.</div>
-
-
-
-<section class="panel profile-panel" id="profilePanel">
-  <div class="profile-left">
-    <h2 class="panel-title">Account Profile</h2>
-    <label class="field"><span>Profile</span>
-      <select id="profileSelect" class="profile-select">
-        <option value="micro_50">micro_50 · $50 · 100:1 · HIGH RISK</option>
-        <option value="micro_100">micro_100 · $100 · 50:1 · HIGH RISK</option>
-        <option value="standard_1k">standard_1k · $1,000 · 5:1 · promotion-eligible</option>
-      </select>
-    </label>
-    <p class="panel-subtitle" id="profileDescription"></p>
-    <p class="profile-warning" id="profileWarning"></p>
-  </div>
-  <div class="profile-right">
-    <div class="profile-spec" id="profileSpecList"></div>
-    <dl class="profile-compare">
-      <dt>You select</dt><dd id="profileSelectSummary"></dd>
-      <dt>You forgo</dt><dd id="profileForgoSummary"></dd>
-    </dl>
+<div class="top-panel-row">
+<section class="panel profile-panel profile-collapsed" id="profilePanel">
+  <button class="profile-toggle" id="profileToggle" type="button" aria-expanded="false" aria-controls="profileBody">
+    <span class="profile-toggle-left">
+      <span class="profile-toggle-title">Account Profile</span>
+      <span class="profile-toggle-sub muted" id="profileSummary">micro_50 · HIGH RISK · not promotion-eligible</span>
+    </span>
+    <span class="profile-toggle-right">
+      <span class="mission-stage-badge profile-stage-demo" id="profileStage">DEMO</span>
+      <span class="mission-pct" id="profileRiskChip">−100:1</span>
+      <span class="mission-caret" aria-hidden="true">&#x25BE;</span>
+    </span>
+  </button>
+  <div class="profile-body" id="profileBody">
+    <div class="profile-left">
+      <label class="field"><span>Account type</span>
+        <select id="profileSelect" class="profile-select">
+          <option value="micro_50">micro_50 · $50 · 100:1 · HIGH RISK</option>
+          <option value="micro_100">micro_100 · $100 · 50:1 · HIGH RISK</option>
+          <option value="standard_1k">standard_1k · $1,000 · 5:1 · promotion-eligible</option>
+        </select>
+      </label>
+      <p class="panel-subtitle" id="profileDescription"></p>
+      <p class="profile-warning" id="profileWarning"></p>
+    </div>
+    <div class="profile-right">
+      <div class="profile-spec" id="profileSpecList"></div>
+      <dl class="profile-compare">
+        <dt>You select</dt><dd id="profileSelectSummary"></dd>
+        <dt>You forgo</dt><dd id="profileForgoSummary"></dd>
+      </dl>
+    </div>
   </div>
 </section>
 
@@ -2019,6 +2079,8 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
     <div class="mission-footer"><span id="missionNext" class="muted">next: ...</span><span id="missionComplete" class="mission-complete">0/7</span></div>
   </div>
 </section>
+
+</div>
 
 <section class="panel agent-steps" id="agentStepsPanel">
   <h2 class="panel-title">Agent Steps</h2>
