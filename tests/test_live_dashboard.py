@@ -230,6 +230,40 @@ def test_load_state_reads_live_demo_run(tmp_path: Path) -> None:
     assert state["errors"] == []
 
 
+def test_load_state_reads_newest_chart_bars(tmp_path: Path) -> None:
+    """Regression: the chart must show the newest bars, not a frozen oldest slice."""
+    from goldbot.contracts import Bar
+
+    path = tmp_path / "bars.sqlite"
+    started = datetime(2026, 1, 19, 0, 0, tzinfo=timezone.utc)
+    with Ledger(path, schema_path=SCHEMA) as ledger:
+        bars = [
+            Bar(
+                time_utc=started + timedelta(minutes=15 * i),
+                open=100.0 + i,
+                high=101.0 + i,
+                low=99.0 + i,
+                close=100.5 + i,
+                tick_volume=10,
+            )
+            for i in range(250)  # more than the 200-bar display limit
+        ]
+        ledger.record_chart_bars(
+            scope_id="gold.v1",
+            timeframe="M15",
+            bars=bars,
+            recorded_at_utc=started + timedelta(days=1),
+        )
+
+    state = load_state(path, max_rows=5)
+    shown = state["chart_bars"]
+    assert len(shown) == 200
+    # Newest 200 bars are indices 50..249; first shown is index 50.
+    assert shown[0]["time"] == bars[50].time_utc.isoformat()
+    assert shown[-1]["time"] == bars[249].time_utc.isoformat()
+    assert state["counts"]["chart_bars"] == 250
+
+
 def test_position_trace_records_ledger_steps(tmp_path: Path) -> None:
     path = tmp_path / "trace.sqlite"
     started = _populate_ledger(path, finished=False, mode="demo_live")

@@ -1128,8 +1128,9 @@ function updateState(data) {
   var curve = s.equity_curve || [];
   var lastEq = curve.length ? curve[curve.length - 1].equity : s.equity;
   byId('equitySummary').textContent = 'equity ' + fmtNum(lastEq, 2) + ' dd ' + fmtNum(drawdown, 2) + '%';
+  var ledgerBarCount = (s.counts && s.counts.chart_bars) || bars.length;
   byId('chartFooterText').textContent = bars.length
-    ? String(bars.length) + ' bars loaded - M15'
+    ? String(bars.length) + ' newest of ' + String(ledgerBarCount) + ' bars - M15'
     : 'bars will appear when the bot writes them to the ledger';
   if (bars.length && bars[0].time) {
     byId('chartTimeRange').textContent = fmtTime(bars[0].time) + ' to ' + fmtTime(bars[bars.length - 1].time);

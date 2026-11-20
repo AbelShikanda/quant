@@ -627,11 +627,13 @@ def load_state(
             connection,
             """
             SELECT bar_time_utc, open_price, high_price, low_price, close_price, volume
-            FROM chart_bars ORDER BY bar_time_utc ASC LIMIT ?
+            FROM chart_bars ORDER BY bar_time_utc DESC LIMIT ?
             """,
             (200,),
         )
         _add_error(errors, error)
+        # DESC LIMIT selects the newest bars; reverse so the chart draws left-to-right.
+        chart_bars.reverse()
         bars_write_row, error = _one(
             connection,
             "SELECT MAX(recorded_at_utc) AS ts FROM chart_bars",
