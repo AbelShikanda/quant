@@ -6,14 +6,10 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $python = Join-Path $root ".venv\Scripts\python.exe"
-# pythonw.exe runs without any console window - no flash, no WSH popup.
-$pythonw = Join-Path $root ".venv\Scripts\pythonw.exe"
 # This machine's .venv python is a shim that re-execs the base global interpreter;
 # the process actually bound to the port is the global child, so "repo .venv" is
 # identified via the parent shim, not the owner's own executable path.
 $script:VenvMarker = (Join-Path $root '.venv').ToLower()
-$serverLog = Join-Path $root "reports\dashboard-server.out.log"
-$serverErrLog = Join-Path $root "reports\dashboard-server.err.log"
 
 function Get-ProcessInfo {
     param([int]$ProcessId)
@@ -93,16 +89,13 @@ if ($owner) {
 
 if (-not (Get-PortOwner -PortNumber $Port)) {
     Write-Host "Starting GOLD BOT dashboard on port $Port ..."
-    # Launch pythonw.exe directly - it has no console window at all, so nothing
-    # ever flashes.  Start-Process -WindowStyle Hidden suppresses the brief
-    # creation window that some launchers show.  Stdout/stderr go to log files.
-    Start-Process -FilePath $pythonw -ArgumentList @(
+    Start-Process -FilePath $python -ArgumentList @(
         "-m", "goldbot.cli", "dashboard-live",
         "--ledger", "reports/demo.execution.ledger.sqlite",
         "--profile", "config/profiles/micro_50.yaml",
         "--host", "127.0.0.1",
         "--port", "$Port"
-    ) -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput $serverLog -RedirectStandardError $serverErrLog
+    ) -WorkingDirectory $root
     Start-Sleep -Seconds 2
-    Open-Browser "http://127.0.0.1:$Port/"
 }
+Open-Browser "http://127.0.0.1:$Port/"

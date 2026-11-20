@@ -2058,11 +2058,6 @@ def _start_agent(
         _AGENT_LOG.clear()
         _append_log("INFO", f"spawning agent: {' '.join(cmd)}")
         try:
-            creation_flags = 0
-            if sys.platform == "win32":
-                # CREATE_NO_CONSOLE prevents a visible CMD window from appearing
-                # when the agent is spawned from the headless dashboard.
-                creation_flags = subprocess.CREATE_NO_CONSOLE
             process = subprocess.Popen(
                 cmd,
                 cwd=str(ROOT),
@@ -2072,7 +2067,6 @@ def _start_agent(
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                creationflags=creation_flags,
             )
         except Exception as exc:  # noqa: BLE001
             _append_log("ERROR", f"failed to start agent: {type(exc).__name__}: {exc}")
