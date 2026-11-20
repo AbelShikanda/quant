@@ -400,6 +400,18 @@ def test_latest_decisions_are_bounded_and_scrollable() -> None:
     assert "overscroll-behavior:contain" in page
 
 
+def test_candlestick_refresh_button_reports_freshness() -> None:
+    page = render_page({}, refresh_seconds=0)
+    assert 'id="refreshChartBtn"' in page
+    assert 'id="chartRefreshNote"' in page
+    assert "byId('refreshChartBtn').addEventListener('click'" in page
+    assert "getJson('/api/state'" in page
+    assert 'function describeChartFreshness' in page
+    assert "' - current'" in page
+    assert "' - stale, waiting on the agent'" in page
+    assert 'start the agent' in page
+
+
 def test_position_aggregate_sits_below_positions() -> None:
     page = render_page({}, refresh_seconds=0)
     assert page.index('id="recentPositions"') < page.index("Positions · aggregate")

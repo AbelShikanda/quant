@@ -1631,6 +1631,63 @@ byId('copyLogsBtn').addEventListener('click', function () {
   fallbackCopyText(text, done);
 });
 
+function padClock(n) { return (n < 10 ? '0' : '') + n; }
+function fmtUtcClock(value) {
+  var d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) { return ''; }
+  return padClock(d.getUTCHours()) + ':' + padClock(d.getUTCMinutes()) + ':' + padClock(d.getUTCSeconds());
+}
+function setChartRefreshNote(text, cls) {
+  var el = byId('chartRefreshNote');
+  if (!el) { return; }
+  el.textContent = text;
+  el.className = 'chart-refresh-note' + (cls ? ' ' + cls : '');
+}
+function describeChartFreshness(bars) {
+  var checked = fmtUtcClock(new Date());
+  if (!bars.length) {
+    setChartRefreshNote('checked ' + checked + ' UTC - no bars yet, start the agent', 'stale');
+    return { empty: true, text: 'No candlesticks in the ledger yet - start the agent.' };
+  }
+  var last = bars[bars.length - 1];
+  var lastTime = new Date(last.time);
+  if (isNaN(lastTime.getTime())) {
+    setChartRefreshNote('checked ' + checked + ' UTC - ' + bars.length + ' bars, time unknown', '');
+    return { empty: false, text: 'Candlesticks refreshed: ' + bars.length + ' bars.' };
+  }
+  var ageMinutes = Math.max(0, Math.floor((Date.now() - lastTime.getTime()) / 60000));
+  var current = ageMinutes <= 30;
+  var note = 'checked ' + checked + ' UTC - last bar ' + fmtUtcClock(lastTime)
+    + ' UTC (' + ageMinutes + 'm old)'
+    + (current ? ' - current' : ' - stale, waiting on the agent');
+  setChartRefreshNote(note, current ? 'fresh' : 'stale');
+  return {
+    empty: false,
+    current: current,
+    text: 'Candlesticks refreshed: ' + bars.length + ' bars, last bar ' + fmtUtcClock(lastTime)
+      + ' UTC (' + (current ? 'current' : ageMinutes + 'm old - stale') + ').'
+  };
+}
+byId('refreshChartBtn').addEventListener('click', function () {
+  var btn = this;
+  if (btn.disabled) { return; }
+  btn.disabled = true;
+  btn.textContent = 'Refreshing...';
+  getJson('/api/state', function (err, data) {
+    btn.disabled = false;
+    btn.textContent = 'Refresh';
+    if (err) {
+      setChartRefreshNote('refresh failed - ' + err.message, 'stale');
+      toast('Chart refresh failed: ' + err.message);
+      return;
+    }
+    updateState(data);
+    var s = (data && data.state) || data || {};
+    var result = describeChartFreshness(s.chart_bars || []);
+    toast(result.text);
+  });
+});
+
 function fmtConnTime(ts) {
   try { return new Date(ts).toLocaleTimeString(); } catch (e) { return String(ts); }
 }
@@ -2389,8 +2446,12 @@ body.conn-lost{padding-top:42px}
 .opportunity-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
 .hint{color:var(--muted);font-size:11px;margin:0}
 .chart-card{padding:12px}
-.chart-header{display:flex;justify-content:space-between;align-items:center}
+.chart-header{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.chart-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .chart-badges{display:flex;gap:6px}
+.chart-refresh-note{font-size:10px;color:var(--muted)}
+.chart-refresh-note.fresh{color:#4ade80}
+.chart-refresh-note.stale{color:#fca5a5}
 #priceChart{width:100%;height:260px;border-radius:10px;background:var(--surface)}
 .chart-footer{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;margin-top:6px}
 .evidence-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:10px}
@@ -2836,7 +2897,11 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
     <div class="panel chart-card" id="chartCard">
       <div class="chart-header">
         <h2 class="panel-title">XAUUSD · Candlesticks</h2>
-        <div class="chart-badges" id="chartBadges"><span class="badge badge-neutral">WAITING FOR BARS</span></div>
+        <div class="chart-tools">
+          <span class="chart-refresh-note" id="chartRefreshNote" role="status"></span>
+          <div class="chart-badges" id="chartBadges"><span class="badge badge-neutral">WAITING FOR BARS</span></div>
+          <button class="btn btn-ghost btn-small" id="refreshChartBtn" type="button" title="Re-read the ledger and redraw the candlesticks">Refresh</button>
+        </div>
       </div>
       <canvas id="priceChart" aria-label="Price chart" height="260"></canvas>
       <div class="chart-footer"><span id="chartFooterText">bars will appear when the bot writes them to the ledger</span><span id="chartTimeRange" class="muted"></span></div>
