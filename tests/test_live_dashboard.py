@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from http import HTTPStatus
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -19,7 +22,13 @@ from goldbot.contracts import (
 )
 from goldbot.cli import build_parser
 from goldbot.ledger import Ledger
-from goldbot.live_dashboard import load_state, make_server, render_page
+from goldbot.live_dashboard import (
+    LiveDashboardHandler,
+    _json_response,
+    load_state,
+    make_server,
+    render_page,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "config" / "storage.schema.sql"
@@ -640,3 +649,104 @@ def test_profile_selection_endpoint_rejects_unknown_profile(tmp_path: Path) -> N
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+class _AbortingWriter:
+    def write(self, _data) -> None:
+        raise ConnectionAbortedError(10053, "client aborted the response")
+
+    def flush(self) -> None:
+        raise ConnectionAbortedError(10053, "client aborted the response")
+
+
+class _DummyHandler:
+    def __init__(self) -> None:
+        self.wfile = _AbortingWriter()
+        self.status = None
+
+    def send_response(self, status) -> None:
+        self.status = status
+
+    def send_header(self, _key, _value) -> None:
+        return None
+
+    def end_headers(self) -> None:
+        return None
+
+
+def test_html_and_json_responses_swallow_client_disconnects() -> None:
+    handler = _DummyHandler()
+    LiveDashboardHandler._send_html(handler, b"body")
+    _json_response(handler, HTTPStatus.OK, {"ok": True})
+    assert handler.status == HTTPStatus.OK
+
+
+def test_handle_error_suppresses_disconnects_but_surfaces_real_faults(tmp_path: Path, monkeypatch) -> None:
+    server = make_server(ledger_path=tmp_path / "errors.sqlite", host="127.0.0.1", port=0)
+    surfaced = []
+
+    def fake_handle_error(self, request, client_address) -> None:
+        surfaced.append((request, client_address))
+
+    monkeypatch.setattr(ThreadingHTTPServer, "handle_error", fake_handle_error)
+    try:
+        try:
+            raise ConnectionAbortedError(10053, "client aborted")
+        except ConnectionAbortedError:
+            server.handle_error(None, ("127.0.0.1", 1234))
+        assert surfaced == []
+
+        try:
+            raise RuntimeError("real server fault")
+        except RuntimeError:
+            server.handle_error(None, ("127.0.0.1", 1234))
+        assert len(surfaced) == 1
+    finally:
+        server.server_close()
+
+
+def test_server_keeps_serving_after_aborted_client(tmp_path: Path) -> None:
+    path = tmp_path / "abort.sqlite"
+    _populate_ledger(path, finished=False, mode="demo_live")
+    server = make_server(ledger_path=path, host="127.0.0.1", port=0, max_rows=5)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        sock.close()
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as response:
+            assert response.status == 200
+            assert json.loads(response.read().decode("utf-8"))["ok"] is True
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_state_read_failure_degrades_instead_of_raising(tmp_path: Path, monkeypatch) -> None:
+    server = make_server(ledger_path=tmp_path / "broken.sqlite", host="127.0.0.1", port=0)
+    handler = LiveDashboardHandler.__new__(LiveDashboardHandler)
+    handler.server = server
+
+    def broken_load_state(*_args, **_kwargs):
+        raise RuntimeError("ledger read exploded")
+
+    monkeypatch.setattr("goldbot.live_dashboard.load_state", broken_load_state)
+    state = handler._state()
+    assert state["ok"] is False
+    assert "state read failed" in state["message"]
+    assert "ledger read exploded" in state["errors"][0]
+    assert state["agent"]["running"] is False
+    server.server_close()
+
+
+def test_dashboard_communicates_a_lost_server_connection() -> None:
+    page = render_page({}, refresh_seconds=0)
+    assert 'id="connBanner"' in page
+    assert "Dashboard server unreachable" in page
+    assert "checkConnectionHealth" in page
+    assert "source.onerror" in page
+    assert "Dashboard connection lost" in page
+

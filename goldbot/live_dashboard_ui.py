@@ -183,6 +183,17 @@ _FEEDBACK_BODY = """
 
 _APP_JS = _JS_HELPERS + r"""
 var REFRESH_MS = 2000;
+var CONN_HEALTH_MS = Math.max(8000, REFRESH_MS * 3);
+window._conn = {
+  lastOk: null,
+  lost: false,
+  stream: null,
+  pollTimer: null,
+  polling: false,
+  retryTimer: null,
+  retryDelay: 2000,
+  shutdown: false
+};
 var fmtScore = function (v) {
   if (v == null) { return 'n/a'; }
   var n = Number(v);
@@ -945,6 +956,7 @@ function wireOrbTilt() {
 }
 
 function updateState(data) {
+  markConnOk();
   var s = data.state || data;
   var previousRenderState = window._prevRenderState;
   window._prevRenderState = s;
@@ -1521,6 +1533,9 @@ byId('closeShutdownModalBtn').addEventListener('click', function () { closeDialo
 byId('cancelShutdownBtn').addEventListener('click', function () { closeDialog('shutdownModal'); });
 byId('confirmShutdownBtn').addEventListener('click', function () {
   postJson('/api/server/shutdown', { confirm: 'SHUT DASHBOARD' }, function () {
+    window._conn.shutdown = true;
+    stopPolling();
+    if (window._conn.stream) { try { window._conn.stream.close(); } catch (e) {} window._conn.stream = null; }
     document.body.innerHTML = '<div class="panel" style="padding:40px;text-align:center;margin:48px auto;max-width:520px"><h2>Dashboard is shutting down</h2><p class="muted">You can close this tab. Reopen the dashboard with the Gold Bot Dashboard shortcut on your Desktop.</p></div>';
   });
 });
@@ -1616,34 +1631,147 @@ byId('copyLogsBtn').addEventListener('click', function () {
   fallbackCopyText(text, done);
 });
 
+function fmtConnTime(ts) {
+  try { return new Date(ts).toLocaleTimeString(); } catch (e) { return String(ts); }
+}
+function setConnBanner(kind, text, meta) {
+  var el = byId('connBanner');
+  if (!el) { return; }
+  if (!kind) {
+    el.className = 'conn-banner';
+    if (document.body) { document.body.classList.remove('conn-lost'); }
+    return;
+  }
+  el.className = 'conn-banner show ' + kind;
+  var textEl = byId('connBannerText');
+  var metaEl = byId('connBannerMeta');
+  if (textEl) { textEl.textContent = text; }
+  if (metaEl) { metaEl.textContent = meta || ''; }
+  if (document.body) { document.body.classList.add('conn-lost'); }
+}
+function markConnOk() {
+  var c = window._conn;
+  if (!c || c.shutdown) { return; }
+  var wasLost = c.lost;
+  c.lastOk = Date.now();
+  c.lost = false;
+  if (wasLost) {
+    setConnBanner(null);
+    toast('Dashboard connection restored.');
+  }
+}
+function markConnLost(reason) {
+  var c = window._conn;
+  if (!c || c.shutdown) { return; }
+  var first = !c.lost;
+  c.lost = true;
+  var meta = c.lastOk ? ('last update ' + fmtConnTime(c.lastOk)) : 'no update received';
+  if (reason) { meta += ' · ' + reason; }
+  setConnBanner(
+    'error',
+    'Dashboard server unreachable — this page is stale. The bot may still be running.',
+    meta + ' · retrying…'
+  );
+  if (first) {
+    toast('Dashboard connection lost. Data on this page is stale.');
+    var chipValue = byId('botChipValue');
+    var chip = byId('botChip');
+    if (chipValue) { chipValue.textContent = 'UNKNOWN'; }
+    if (chip) { chip.className = 'chip chip-red'; }
+  }
+}
+function stopPolling() {
+  var c = window._conn;
+  if (!c) { return; }
+  c.polling = false;
+  if (c.pollTimer) { window.clearTimeout(c.pollTimer); c.pollTimer = null; }
+}
+function startPolling() {
+  var c = window._conn;
+  if (!c || c.polling || c.shutdown) { return; }
+  c.polling = true;
+  var tick = function () {
+    if (!c.polling || c.shutdown) { return; }
+    getJson('/api/state', function (err, data) {
+      if (!c.polling || c.shutdown) { return; }
+      if (err) { markConnLost(err.message || 'request failed'); }
+      else { updateState(data); }
+      c.pollTimer = window.setTimeout(tick, REFRESH_MS);
+    });
+  };
+  tick();
+}
+function scheduleStreamReconnect() {
+  var c = window._conn;
+  if (!c || c.shutdown || c.retryTimer) { return; }
+  var delay = c.retryDelay || 2000;
+  c.retryTimer = window.setTimeout(function () {
+    c.retryTimer = null;
+    c.retryDelay = Math.min((c.retryDelay || 2000) * 2, 15000);
+    connectStream();
+  }, delay);
+}
 function connectStream() {
+  var c = window._conn;
+  if (!c || c.shutdown) { return; }
+  if (c.stream) {
+    try { c.stream.close(); } catch (e) {}
+    c.stream = null;
+  }
   if (typeof EventSource === 'undefined') {
-    fallbackPoll();
+    startPolling();
     return;
   }
   var source = new EventSource('/api/stream');
+  c.stream = source;
+  source.onopen = function () {
+    if (c.stream !== source) { return; }
+    c.retryDelay = 2000;
+    stopPolling();
+    markConnOk();
+  };
   source.addEventListener('state', function (ev) {
     var data;
-    try { data = JSON.parse(ev.data); } catch (e) { source.close(); fallbackPoll(); return; }
+    try {
+      data = JSON.parse(ev.data);
+    } catch (e) {
+      source.close();
+      if (c.stream === source) { c.stream = null; }
+      startPolling();
+      scheduleStreamReconnect();
+      return;
+    }
     updateState(data);
   });
   source.onerror = function () {
     source.close();
-    fallbackPoll();
+    if (c.stream === source) { c.stream = null; }
+    startPolling();
+    scheduleStreamReconnect();
   };
 }
-function fallbackPoll() {
-  setInterval(function () {
-    getJson('/api/state', function (err, data) {
-      if (err) { return; }
-      updateState(data);
-    });
-  }, REFRESH_MS);
+function checkConnectionHealth() {
+  var c = window._conn;
+  if (!c || c.shutdown) { return; }
+  if (c.lastOk == null) {
+    c.lastOk = Date.now();
+    return;
+  }
+  var age = Date.now() - c.lastOk;
+  if (age <= CONN_HEALTH_MS) { return; }
+  markConnLost('no update for ' + Math.round(age / 1000) + 's');
+  startPolling();
+  if (c.stream) {
+    try { c.stream.close(); } catch (e) {}
+    c.stream = null;
+  }
+  scheduleStreamReconnect();
 }
 wireMissionToggle();
 wireProfileToggle();
 wireOrbTilt();
 window.setInterval(updateUpstreamLine, 1000);
+window.setInterval(checkConnectionHealth, 1000);
 connectStream();
 """
 
@@ -2081,6 +2209,12 @@ h1,h2,h3{margin:0;font-weight:700}
 .agent-steps-note{margin:8px 0 0;color:var(--muted);font-size:11px}
 .toast{position:fixed;bottom:16px;right:16px;background:#052e16;border:1px solid #16a34a;border-radius:10px;padding:10px 14px;color:#bbf7d0;font-weight:700;display:none;z-index:10;box-shadow:0 0 20px rgba(34,197,94,.35)}
 .toast.show{display:block}
+.conn-banner{position:fixed;top:0;left:0;right:0;z-index:120;display:none;align-items:center;justify-content:center;gap:10px;padding:8px 16px;background:#450a0a;border-bottom:1px solid #b91c1c;color:#fecaca;font-size:12px;font-weight:700;letter-spacing:.02em;box-shadow:0 4px 18px rgba(0,0,0,.55);text-align:center}
+.conn-banner.show{display:flex}
+body.conn-lost{padding-top:42px}
+.conn-dot{width:9px;height:9px;border-radius:50%;background:currentColor;box-shadow:0 0 9px currentColor;flex:0 0 auto;animation:connPulse 1.1s ease-in-out infinite}
+@keyframes connPulse{0%,100%{opacity:1}50%{opacity:.35}}
+.conn-meta{color:#fca5a5;font-weight:500}
 .brand{display:flex;gap:10px;align-items:center}
 .logo{width:24px;height:24px;border-radius:7px;background:radial-gradient(circle at 40% 40%,var(--cyan),var(--gold));box-shadow:0 0 12px var(--cyan)}
 .brand-text h1{font-size:16px;letter-spacing:.08em}
@@ -2434,6 +2568,11 @@ def render_page(state: dict[str, Any], refresh_seconds: float = 2.0) -> str:
     drawdown = risk.get("current_drawdown_pct")
 
     body = f"""
+<div id="connBanner" class="conn-banner" role="alert" aria-live="assertive">
+  <span class="conn-dot" aria-hidden="true"></span>
+  <span id="connBannerText">Dashboard server unreachable — this page is stale. The bot may still be running.</span>
+  <span id="connBannerMeta" class="conn-meta"></span>
+</div>
 <header class="state-strip" role="banner">
   <div class="brand">
     <span class="logo"></span>

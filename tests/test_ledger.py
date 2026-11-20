@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -224,3 +226,11 @@ def test_stale_lock_file_owned_by_dead_pid_is_reclaimed(tmp_path: Path) -> None:
         assert ledger is not None
 
     assert not lock_path.exists()
+
+
+def test_live_lock_owner_probe_does_not_signal_the_current_process() -> None:
+    # Regression: on Windows, os.kill(pid, 0) is CTRL_C_EVENT (0), not a probe.
+    # It must not take down the process that is asking whether the lock is live.
+    assert Ledger._lock_owner_alive(os.getpid(), socket.gethostname()) is True
+    if sys.platform == "win32":
+        assert Ledger._lock_owner_alive(999999, socket.gethostname()) is False

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 from contextlib import AbstractContextManager
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,46 @@ from .contracts import StrategyDecision, ensure_utc, utc_now
 from .data import SQLiteStore
 
 DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "config" / "storage.schema.sql"
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    """Check a Windows PID without ``os.kill``.
+
+    On Windows ``signal.CTRL_C_EVENT`` is 0, so ``os.kill(pid, 0)`` does not
+    mean "probe" the way it does on POSIX: it can send a console interrupt to
+    the process group and take down the dashboard/agent that called it. Query
+    the process handle instead.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information = 0x1000
+    error_access_denied = 5
+    still_active = 259
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        # Access denied means the process exists but is protected; refusing to
+        # steal its lock is the safe choice.
+        return ctypes.get_last_error() == error_access_denied
+    try:
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return True
+        return exit_code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class LedgerError(RuntimeError):
@@ -112,6 +153,8 @@ class Ledger(AbstractContextManager["Ledger"]):
             if host and host != current_host:
                 # Cannot verify owner across hosts; refuse to steal.
                 return True
+            if sys.platform == "win32":
+                return _windows_pid_alive(pid)
             os.kill(pid, 0)
             return True
         except PermissionError:

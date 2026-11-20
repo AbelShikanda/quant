@@ -19,8 +19,10 @@ import csv
 import html
 import io
 import json
+import logging
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from collections import deque
@@ -49,6 +51,11 @@ STARTUP_LOG_LINES = 300
 PYTHON = "python"
 EXECUTION_LEDGER = "reports/demo.execution.ledger.sqlite"
 CSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'"
+
+LOGGER = logging.getLogger(__name__)
+# Routine browser refreshes, tab closes, and navigations abort the socket mid-response.
+# These are not server faults and must never reach stderr as a traceback.
+_CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
 _AGENT_LOCK = threading.Lock()
 _AGENT_PROCESS: subprocess.Popen | None = None
@@ -2058,6 +2065,8 @@ def _start_agent(
                 stderr=subprocess.STDOUT,
                 bufsize=1,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
         except Exception as exc:  # noqa: BLE001
             _append_log("ERROR", f"failed to start agent: {type(exc).__name__}: {exc}")
@@ -2067,12 +2076,19 @@ def _start_agent(
         _AGENT_STARTED_AT = _utc_now()
 
         def _read_output() -> None:
-            assert process.stdout is not None
-            for line in process.stdout:
-                _AGENT_LOG.append(line.rstrip("\n"))
-            process.wait()
-            exit_code = process.poll()
-            _append_log("INFO", f"agent exited with code {exit_code}")
+            exit_code: int | None = None
+            try:
+                assert process.stdout is not None
+                for line in process.stdout:
+                    _AGENT_LOG.append(line.rstrip("\n"))
+                exit_code = process.wait()
+            except Exception as exc:  # noqa: BLE001 - a reader failure must not kill the dashboard
+                _append_log("ERROR", f"agent output reader failed: {type(exc).__name__}: {exc}")
+            finally:
+                if exit_code is None:
+                    exit_code = process.poll()
+                level = "INFO" if exit_code in (0, None) else "ERROR"
+                _append_log(level, f"agent exited with code {exit_code}")
 
         threading.Thread(target=_read_output, daemon=True).start()
         return {"started": True, "pid": process.pid, "cmd": cmd}
@@ -2143,6 +2159,14 @@ class LiveDashboardServer(ThreadingHTTPServer):
         self.bars = int(bars)
         self.context_bars = int(context_bars)
 
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """Keep routine client disconnects out of stderr; surface real faults."""
+        exc = sys.exc_info()[1]
+        if isinstance(exc, _CLIENT_DISCONNECT_ERRORS):
+            LOGGER.debug("client disconnected during response: %s", client_address)
+            return
+        super().handle_error(request, client_address)
+
 
 def _json_response(
     handler: BaseHTTPRequestHandler,
@@ -2150,21 +2174,21 @@ def _json_response(
     payload: dict[str, Any],
 ) -> None:
     body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Cache-Control", "no-store")
-    handler.send_header("X-Content-Type-Options", "nosniff")
-    handler.send_header(
-        "Content-Security-Policy",
-        CSP,
-    )
-    handler.end_headers()
-    handler.wfile.write(body)
     try:
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("X-Content-Type-Options", "nosniff")
+        handler.send_header(
+            "Content-Security-Policy",
+            CSP,
+        )
+        handler.end_headers()
+        handler.wfile.write(body)
         handler.wfile.flush()
-    except OSError:
-        pass
+    except _CLIENT_DISCONNECT_ERRORS:
+        LOGGER.debug("client disconnected before the JSON response completed")
 
 
 class LiveDashboardHandler(BaseHTTPRequestHandler):
@@ -2177,31 +2201,45 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
             try:
                 state = self._state()
                 body = render_page(state, self.server.refresh_seconds).encode("utf-8")
-                self._send_html(body)
+                status = HTTPStatus.OK
             except Exception as exc:  # noqa: BLE001 - server must report, not crash
-                self._send_html(
-                    f"dashboard-live error: {type(exc).__name__}: {exc}".encode("utf-8"),
-                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
-                )
+                LOGGER.exception("dashboard page render failed")
+                body = f"dashboard-live error: {type(exc).__name__}: {exc}".encode("utf-8")
+                status = HTTPStatus.INTERNAL_SERVER_ERROR
+            self._send_html(body, status=status)
             return
 
         if path == "/feedback":
             try:
                 body = render_feedback_page().encode("utf-8")
-                self._send_html(body)
+                status = HTTPStatus.OK
             except Exception as exc:  # noqa: BLE001 - server must report, not crash
-                self._send_html(
-                    f"feedback error: {type(exc).__name__}: {exc}".encode("utf-8"),
-                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
-                )
+                LOGGER.exception("feedback page render failed")
+                body = f"feedback error: {type(exc).__name__}: {exc}".encode("utf-8")
+                status = HTTPStatus.INTERNAL_SERVER_ERROR
+            self._send_html(body, status=status)
             return
 
         if path == "/api/state":
-            _json_response(self, HTTPStatus.OK, {"v": 1, "state": self._state()})
+            try:
+                payload = {"v": 1, "state": self._state()}
+                status = HTTPStatus.OK
+            except Exception as exc:  # noqa: BLE001 - a bad ledger read must not kill the server
+                LOGGER.exception("dashboard state read failed")
+                payload = {"v": 1, "ok": False, "error": f"state read failed: {type(exc).__name__}: {exc}"}
+                status = HTTPStatus.INTERNAL_SERVER_ERROR
+            _json_response(self, status, payload)
             return
 
         if path == "/api/agent/status":
-            _json_response(self, HTTPStatus.OK, {"v": 1, "agent": _agent_status()})
+            try:
+                payload = {"v": 1, "agent": _agent_status()}
+                status = HTTPStatus.OK
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("agent status read failed")
+                payload = {"v": 1, "ok": False, "error": f"agent status failed: {type(exc).__name__}: {exc}"}
+                status = HTTPStatus.INTERNAL_SERVER_ERROR
+            _json_response(self, status, payload)
             return
 
         if path == "/api/feedback":
@@ -2244,13 +2282,16 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
                 ".gif": "image/gif",
                 ".webp": "image/webp",
             }.get(target.suffix.lower(), "application/octet-stream")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "max-age=3600")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "max-age=3600")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(data)
+            except _CLIENT_DISCONNECT_ERRORS:
+                LOGGER.debug("client disconnected before the asset response completed")
             return
 
         if path == "/api/stream":
@@ -2262,8 +2303,11 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/favicon.ico":
-            self.send_response(HTTPStatus.NO_CONTENT)
-            self.end_headers()
+            try:
+                self.send_response(HTTPStatus.NO_CONTENT)
+                self.end_headers()
+            except _CLIENT_DISCONNECT_ERRORS:
+                LOGGER.debug("client disconnected before the favicon response completed")
             return
 
         self._send_text(b"not found", status=HTTPStatus.NOT_FOUND)
@@ -2652,70 +2696,109 @@ class LiveDashboardHandler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def _state(self) -> dict[str, Any]:
-        state = load_state(
-            self.server.ledger_path,
-            max_rows=self.server.max_rows,
-            stale_after_seconds=max(30.0, self.server.refresh_seconds * 3.0),
-            agent_status=_agent_status(),
-            log_lines=_agent_log_lines(),
-        )
-        state["profile_spec"] = _profile_spec(self.server.profile)
+        try:
+            state = load_state(
+                self.server.ledger_path,
+                max_rows=self.server.max_rows,
+                stale_after_seconds=max(30.0, self.server.refresh_seconds * 3.0),
+                agent_status=_agent_status(),
+                log_lines=_agent_log_lines(),
+            )
+        except Exception as exc:  # noqa: BLE001 - a bad read must not take the dashboard down
+            LOGGER.exception("dashboard state read failed")
+            state = {
+                "ok": False,
+                "generated_at_utc": _utc_now().isoformat(),
+                "ledger_path": str(self.server.ledger_path),
+                "ledger_exists": Path(self.server.ledger_path).exists(),
+                "read_only": True,
+                "no_mt5_connection": True,
+                "message": f"state read failed: {type(exc).__name__}: {exc}",
+                "errors": [f"{type(exc).__name__}: {exc}"],
+                "agent": _agent_status(),
+                "agent_logs": _agent_log_lines(),
+                "counts": {},
+            }
+        try:
+            state["profile_spec"] = _profile_spec(self.server.profile)
+        except Exception:  # noqa: BLE001 - profile metadata is optional
+            LOGGER.exception("dashboard profile spec failed")
+            state["profile_spec"] = {}
         state["selected_profile"] = _profile_key(self.server.profile)
         state["expected_login"] = self.server.expected_login
-        state["notifications"] = _build_notifications(state)
+        try:
+            state["notifications"] = _build_notifications(state)
+        except Exception:  # noqa: BLE001 - notifications are optional
+            LOGGER.exception("dashboard notifications failed")
+            state["notifications"] = []
         return state
 
     def _stream_state(self) -> None:
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "keep-alive")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header(
-            "Content-Security-Policy",
-            CSP,
-        )
-        self.end_headers()
         try:
-            while True:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header(
+                "Content-Security-Policy",
+                CSP,
+            )
+            self.end_headers()
+        except _CLIENT_DISCONNECT_ERRORS:
+            LOGGER.debug("client disconnected before the stream opened")
+            return
+        while True:
+            try:
                 state = self._state()
                 payload = {"v": 1, "agent": state["agent"], "state": state}
                 message = f"event: state\ndata: {json.dumps(payload, default=str, ensure_ascii=False)}\n\n"
                 self.wfile.write(message.encode("utf-8"))
                 self.wfile.flush()
-                threading.Event().wait(self.server.refresh_seconds)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
-            return
+            except _CLIENT_DISCONNECT_ERRORS:
+                return
+            except Exception:  # noqa: BLE001 - keep the stream alive through transient read errors
+                LOGGER.exception("dashboard stream state failed")
+                try:
+                    error_payload = json.dumps(
+                        {"v": 1, "ok": False, "error": "state read failed; retrying"},
+                        ensure_ascii=False,
+                    )
+                    self.wfile.write(f"event: error\ndata: {error_payload}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                except _CLIENT_DISCONNECT_ERRORS:
+                    return
+            threading.Event().wait(self.server.refresh_seconds)
 
     def _send_html(self, body: bytes, status: HTTPStatus = HTTPStatus.OK) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header(
-            "Content-Security-Policy",
-            CSP,
-        )
-        self.end_headers()
-        self.wfile.write(body)
         try:
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header(
+                "Content-Security-Policy",
+                CSP,
+            )
+            self.end_headers()
+            self.wfile.write(body)
             self.wfile.flush()
-        except OSError:
-            pass
+        except _CLIENT_DISCONNECT_ERRORS:
+            LOGGER.debug("client disconnected during the HTML response")
 
     def _send_text(self, body: bytes, status: HTTPStatus = HTTPStatus.OK) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(body)
         try:
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(body)
             self.wfile.flush()
-        except OSError:
-            pass
+        except _CLIENT_DISCONNECT_ERRORS:
+            LOGGER.debug("client disconnected during the text response")
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
         return
@@ -2807,7 +2890,19 @@ def serve_live_dashboard(
         import webbrowser as _webbrowser
         _threading.Timer(0.5, _webbrowser.open, args=(url,)).start()
     try:
-        server.serve_forever()
+        while True:
+            try:
+                server.serve_forever()
+                break
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 - an accept-loop fault must not kill the UI
+                LOGGER.exception("dashboard serve loop failed")
+                print(
+                    f"[dashboard-live] server loop error: {type(exc).__name__}: {exc}; restarting",
+                    file=sys.stderr,
+                )
+                time.sleep(1.0)
     except KeyboardInterrupt:
         _append_log("INFO", "dashboard stopped")
         print("\n[dashboard-live] stopped")
